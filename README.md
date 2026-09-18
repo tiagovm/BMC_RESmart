@@ -122,18 +122,27 @@ The plotting pipeline steps 1-5 are chained into a single CLI
 (`analyze_cpap.py`):
 
     python analyze_cpap.py -i out.csv --session 3        # night 3 -> PNG
+    python analyze_cpap.py -i out.csv --overlay 10       # last 10 nights overlapped
+    python analyze_cpap.py -i out.csv --overlay 10 --overlay-epap   # ... + EPAP
     python analyze_cpap.py -i out.csv --show             # most recent night, on screen
     python analyze_cpap.py -i out.csv -o night.png --limit-hours 6
 
 - `-i/--input` is the CSV from step 3; `--session N` picks a session
   (default: the most recent one). Without `--session` the most recent
   night is used. An unknown id prints the available ids.
+- `--overlay N` overlays the last `N` nights on a common time axis of
+  *hours since each session started* (sessions begin at different
+  wall-clock times, so a relative axis is what makes them line up for
+  comparison); `--overlay-epap` adds the EPAP curves in dashed faint
+  lines. If fewer sessions exist than requested, all of them are drawn.
 - The plot shows the night's IPAP/EPAP pressure curves in cmH2O (the raw
   device values are stored in 0.5 cmH2O steps and divided by 2), saved as
-  `pressure_session_<id>_<date>.png` next to the input unless `-o` is given;
-  `--show` displays it on screen instead.
-- Programmatic use: `plot_pressure_curve(session_df)` from `plotting.py`
-  returns the Matplotlib figure/axes for a single-session DataFrame.
+  `pressure_session_<id>_<date>.png` / `overlapped_sessions_last_<N>.png`
+  next to the input unless `-o` is given; `--show` displays it on screen
+  instead.
+- Programmatic use: `plot_pressure_curve(session_df)` and
+  `plot_overlapped_sessions(df, num_sessions=10)` from `plotting.py`
+  return the Matplotlib figure/axes for a single-session DataFrame.
 
 `graph_data.py` is an unfinished placeholder GUI and does not read RESmart
 data yet.

@@ -156,8 +156,11 @@ read_csv → clean_and_preprocess → segment_sessions
 ```
 
 - CLI: `-i/--input` (required), `--session N` (default: most recent),
-  `-o/--output` PNG (default: `pressure_session_<id>_<date>.png` next to the
-  input), `--show` (interactive backend), `--limit-hours` (passthrough).
+  `--overlay N` (mutually exclusive with `--session`, overlays the last N
+  sessions via `plot_overlapped_sessions`), `--overlay-epap`,
+  `-o/--output` PNG (default: `pressure_session_<id>_<date>.png` /
+  `overlapped_sessions_last_<N>.png` next to the input), `--show`
+  (interactive backend), `--limit-hours` (passthrough).
   The pyplot backend is chosen before importing `plotting.py`: Agg for file
   output, the default interactive one for `--show`.
 - `plot_pressure_curve(session_df)` converts the raw pressures to cmH2O by
@@ -167,6 +170,15 @@ read_csv → clean_and_preprocess → segment_sessions
   title. Invalid reads that preprocess converted to NaN simply leave gaps.
   It returns the Matplotlib `(figure, axes)` so the caller decides how to
   save or show it.
+- `plot_overlapped_sessions(df, num_sessions=10, include_epap=False)`
+  overlays the last N nights. Sessions begin at different wall-clock times
+  (22:45 one night, 23:10 the next), so plotting absolute timestamps would
+  side-by-side them; instead it builds a per-session relative axis:
+  `hours_since_start = (timestamp − groupby("session_id")["timestamp"].transform("first")) / 1 h`,
+  so every curve starts at x=0 and recurring patterns after falling asleep
+  can be spotted. A `tab10` colormap keeps the curves distinguishable;
+  EPAP is opt-in, drawn as faint dashed lines. The pipeline takes the
+  `--overlay` branch and skips the single-session filter.
 
 ## 4. Key design decisions
 
@@ -241,7 +253,9 @@ read_csv → clean_and_preprocess → segment_sessions
   (see "Secondary processing" in the architecture section).
 - [done] `plotting.py` + `analyze_cpap.py` — `plot_pressure_curve` derives
   `IPAP_cmH2O`/`EPAP_cmH2O` (raw / 2) and plots a session's pressure curves;
-  the CLI chains clean → segment → filter → plot → save (or `--show`).
+  `plot_overlapped_sessions` overlays the last N nights on a relative
+  hours-since-start axis; the CLI chains clean → segment → filter/overlay →
+  plot → save (or `--show`) and exposes them via `--session` / `--overlay`.
   Next step: per session-aggregated statistics (duration, AHI-style indices,
   pressure/wave profiles) in `analysis.py`, then richer plots.
 - `graph_data.py`: turn the placeholder into a real viewer that reads the
