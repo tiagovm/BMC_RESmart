@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+"""Decode raw SD-card data dumps from a BMC RESmart GII CPAP machine.
+
+Reverse-engineered, unofficial, not for medical use. See README.md for the
+packet-format spec and DESIGN.md for architecture details.
+"""
+
 import struct
 import sys
 import glob
@@ -5,74 +12,71 @@ import argparse
 import datetime
 
 
+PACKET_SIZE = 256
+# maximum number of csv lines buffered before writing them to the output file
+FLUSH_LINES = 4096
+
+
 class packet(object):
     """ Holds data for one 256-byte packet from the raw (numerical
     extension) RESmart data files. Also methods for parsing the data """
 
-    def __init__(self,start, pbuf):
-        """ given pbuf list of bytes, parse out the data"""
+    # length of data fields (uint16_t), not counting zero pads and timestamp
+    dlen = 106
 
-        assert len(pbuf) >= 256
+    timestamp_fields = ["year", "month", "day", "hour", "minute", "second", "?"]
 
-        # length of data fields (uint16_t), not counting zero pads and timestamp
-        self.dlen = 106
+    # human-readable labels for data words. These are identical for every
+    # packet, so they are built once here (class level) instead of once per
+    # packet, which made parsing the full dump ~10x slower.
+    data_fields = ["?" for _ in range(dlen)]
 
-        # extract timestamp
+    # first 85 fields are 25 Hz and 10 Hz measurements of pressure/flow
+    for _i in range(25):
+        data_fields[4 + _i]           = "resA_{:d}".format(_i)
+        data_fields[4 + _i + 25]      = "resB_{:d}".format(_i)
+        data_fields[4 + _i + 50]      = "resC_{:d}".format(_i)
+        if _i < 10:
+            data_fields[4 + _i + 75]  = "pulse_{:d}".format(_i)
+    del _i
+
+    # some data fields are known, label them
+    known_fields = {
+        "Reslex": 1,
+        "IPAP": 2,
+        "EPAP": 3,
+        "tidal_vol": 99,
+        "spO2_pct": 102,
+        "HR_BPM": 103,
+        "rep_rate": 104}
+
+    # units of the raw stored values, shown in the CSV header row.
+    # The raw words are NOT converted: the unit documents what the stored
+    # value means (e.g. IPAP=13 means 6.5 cmH2O).
+    known_units = {
+        "Reslex": "",
+        "IPAP": "0.5 cmH2O",
+        "EPAP": "0.5 cmH2O",
+        "tidal_vol": "L/min",
+        "spO2_pct": "%",
+        "HR_BPM": "bpm",
+        "rep_rate": "breaths/min"}
+
+    for _key, _val in known_fields.items():
+        data_fields[_val] = _key
+    del _key, _val
+
+    def __init__(self, pbuf):
+        """ given pbuf bytes, parse out the data"""
+        assert len(pbuf) >= PACKET_SIZE
         self.parse_timestamp(pbuf)
-
-        # extract data fields
         self.parse_data(pbuf)
+        self.has_pulse = self.data[self.known_fields["spO2_pct"]] > 0
 
-        # generate human-readable labels
-        self.setup_labels()
-
-        if self.data[self.known_fields["spO2_pct"]] > 0:
-            self.has_pulse = True
-        else:
-            self.has_pulse = False
-        
-
-    def setup_labels(self):
-        """ These are human-readable labels for the headers of .csv files"""
-        # set up data structure for field labels
-        self.timestamp_fields = ["year","month","day","hour","minute","second","?"]
-        # default label is "?" for unknown data field
-        self.data_fields = ["?" for i in range(self.dlen)]
-        
-        # first 85 fields are 25 Hz and 10 Hz measurements of pressure/flow
-        for i in range(25):
-            self.data_fields[4 + i          ] = "resA_{:d}".format(i)
-            self.data_fields[4 + i + 25     ] = "resB_{:d}".format(i)
-            self.data_fields[4 + i + 50     ] = "resC_{:d}".format(i)
-            if i < 10:
-                self.data_fields[4 + i + 75 ] = "pulse_{:d}".format(i)
-                
-        # some data fields are known, label them
-        self.known_fields = {
-            "Reslex":1,
-            "IPAP":2,
-            "EPAP":3,
-            "tidal_vol":99,
-            "spO2_pct":102,
-            "HR_BPM":103,
-            "rep_rate":104}
-        
-        # units of the raw stored values, shown in the CSV header row
-        self.known_units = {
-            "Reslex": "",
-            "IPAP": "0.5 cmH2O",
-            "EPAP": "0.5 cmH2O",
-            "tidal_vol": "L/min",
-            "spO2_pct": "%",
-            "HR_BPM": "bpm",
-            "rep_rate": "breaths/min"}
-
-        for key, val in self.known_fields.items():
-            self.data_fields[val] = key
-    
-    def parse_timestamp(self,pbuf):
+    def parse_timestamp(self, pbuf):
         """ the timestamp is the last 8 bytes of every packet"""
-        self.timestamp = struct.unpack("HBBBBBB",pbuf[256-8:256])
+        self.timestamp = struct.unpack("HBBBBBB",
+                                       pbuf[PACKET_SIZE-8:PACKET_SIZE])
 
         # for readability and convenience, parse out individual fields.
         self.year = self.timestamp[0]
@@ -81,24 +85,21 @@ class packet(object):
         self.hour = int(self.timestamp[3])
         self.minute = self.timestamp[4]
         self.second = self.timestamp[5]
-        
-        self.date = datetime.date(self.year,self.month,self.day)
+
+        self.date = datetime.date(self.year, self.month, self.day)
         self.ordinal = self.date.toordinal()
         self.datestr = self.date.isoformat()
 
     def parse_data(self, pbuf):
-        """  extract all 16-bit uint16_t data (dlen words) from the packet"""
-        self.data = []
-        assert 2*self.dlen < len(pbuf)
-        for i in range(self.dlen):
-            ptr = 2*i # uint16_t, 2-byte unsigned integers
-            val = struct.unpack("H",pbuf[ptr:ptr+2])
-            self.data.append(val[0])
+        """  extract all 16-bit uint16_t data (dlen words) from the packet.
+        A single bulk unpack instead of one struct.unpack per word."""
+        self.data = list(struct.unpack(str(self.dlen) + "H",
+                                       pbuf[:2*self.dlen]))
 
     def get_known_values_csv(self):
         # print only understood values
         outstr = ""
-        for key, val in self.known_fields.items():
+        for val in self.known_fields.values():
             outstr += "{}, ".format(self.data[val])
         return outstr
 
@@ -110,20 +111,19 @@ class packet(object):
         return outstr
 
     def fix_csv(self, csv_str):
-        # remove trailing spaces & comma, add newline 
+        # remove trailing spaces & comma
         csv_str = csv_str.strip()
         if csv_str[-1] == ',':
             csv_str = csv_str[0:-1]
-        return csv_str 
+        return csv_str
 
     def get_time_ymd_csv(self):
-        # return time string in year, month, day format
+        # return time string in year, month, day, hour, minute, second, ? format
         outstr = ""
         for i in self.timestamp:
             outstr += "{:d}, ".format(i)
-            
         return outstr
-            
+
     def get_time_seconds(self):
         return self.second + 60*self.minute + 3600*(self.hour + 24*(self.ordinal))
 
@@ -141,73 +141,33 @@ class packet(object):
         return "{}, ".format(self.data[4 + 75 + i])
 
     def get_25hz_csv(self, i):
-        #These fields are arrays of 25 values/second, something to do with
+        # These fields are arrays of 25 values/second, something to do with
         # respiration. Last one is cleanest -- filtered?
         outstr = "{:d}, {:d}, {:d}, ".format(self.data[4 + i],
                                              self.data[4 + 25 + i],
                                              self.data[4 + 50 + i])
         return outstr
 
-   
 
-#### methods for a collection of packets
 def s2HMS(seconds):
-    # should refactor this with datetime
-    #return a string giving hours minutes seconds from seconds
+    # return a string giving hours and minutes from seconds
     hours = int(seconds/3600.)
-    minutes = int((seconds%3600)/60.)
-    return"{:02d}:{:02d}".format(hours,minutes)
+    minutes = int((seconds % 3600)/60.)
+    return "{:02d}:{:02d}".format(hours, minutes)
 
-def get_day_info(packets):
-    # given a list of packets, return a symbolic string of contents
-    # one char per hour, '.' if no data, '+' if flow data, '0' if heartrate
-    # should refactor this by date
-    hstr = ""
-    pptr = 0
 
-    datestr = packets[0].datestr
-    hour = -1
-    # 24 chars, one for each hour, for graphical representation of data
-    hstr = ["." for i in range(24)]
-    infostr = ""
-    daysecs = 0
-    has_pulse = False
-    for p in packets:
-
-        daysecs += 1
-        if p.has_pulse:
-            has_pulse = True
-
-        if p.hour > hour:
-            hour = p.hour
-            if has_pulse:
-                hstr[hour] = 'O'
-                has_pulse = False
-            else: 
-                hstr[hour] = '+'
-
-        if p.datestr != datestr:
-            infostr += (datestr + " " + "".join(hstr) +  \
-                        " {}\n".format(s2HMS(daysecs)))
-            hstr = ["." for i in range(24)]
-            daysecs = 0
-            hour = -1
-            datestr = p.datestr
-
-    infostr += (datestr + " " + "".join(hstr) +  \
-                " {}\n".format(s2HMS(daysecs)))
-    return infostr
-
-def make_header(pkt, args):
-    """ csv header row matching the column layout of the current output mode """
+def make_header(args):
+    """ csv header row matching the column layout of the current output mode.
+    Only class-level constants are used, so the header can be written before
+    any packet has been parsed."""
     def named(name):
-        unit = pkt.known_units.get(name, "")
+        unit = packet.known_units.get(name, "")
         return name + (" ({})".format(unit) if unit else "")
 
     cols = []
     # time columns
     if args.time_ymd:
-        cols += pkt.timestamp_fields
+        cols += packet.timestamp_fields
     elif args.time_seconds:
         cols += ["time_seconds"]
     else:
@@ -215,14 +175,14 @@ def make_header(pkt, args):
 
     # data columns
     if args.all_data:
-        for i in range(pkt.dlen):
-            label = pkt.data_fields[i]
+        for i in range(packet.dlen):
+            label = packet.data_fields[i]
             if label == "?":
                 cols.append("word_{:03d}".format(i))
             else:
                 cols.append(named(label))
     else:
-        for name in pkt.known_fields:
+        for name in packet.known_fields:
             cols.append(named(name))
 
     # sub-second sample columns
@@ -237,191 +197,280 @@ def make_header(pkt, args):
 
     return ", ".join(cols)
 
-######################## main program starts here
 
-if sys.version_info.major < 3:
-    print("sorry, requires Python 3.")
-    exit(1)
+def packet_rows(p, args):
+    """ return the list of csv rows (without trailing newline) for one packet,
+    following the selected output mode """
+    if args.all_data:
+        data = p.get_all_values_csv()
+    else:
+        data = p.get_known_values_csv()
 
-
-parser = argparse.ArgumentParser(
-    description='Extract data from BMC RESmart raw data files')
-
-parser.add_argument('--info','-i',
-                    action='store_true',
-                    help='Prints readable summary of data and dates to stdout.' )
-
-parser.add_argument('--f25_hz','-2',
-                    action='store_true',
-                    help='Print out all 25 Hz (flow) data. this will make output files 25x as big.' )
-
-parser.add_argument('--f10_hz','-1',
-                    action='store_true',
-                    help='Print out all 10 Hz (pulse) data. this will make output files 10x as big.' )
-
-parser.add_argument('--all_data','-a',
-                    action='store_true',
-                    help='Print out all 1Hz data fields known or unknown' )
-
-parser.add_argument('--time_ymd','-y',
-                    action='store_true',
-                    help='Print timestamp in Y, M, D, H, M, S format')
-
-parser.add_argument('--time_seconds','-s',
-                    action='store_true',
-                    help='Print timestamp in seconds since beginning of year')
-
-parser.add_argument('--quiet','-q',
-                    action='store_true',
-                    help='Do not print progress and info to stderr')
-
-parser.add_argument('--output','-o',
-                    help='Output data CSV file (default: %(default)s); it overwrites existing data.',
-                    default='RESmart_data.csv')
-
-parser.add_argument('--dates', '-d',  nargs = '+', 
-                    help='select date range in YYYY-MM-DD format. Single date is one day, two dates are start and end of time range.',
-                    default=[])
-
-# no arguments at all: show help and exit without reading or writing any files
-if len(sys.argv) == 1:
-    parser.print_help(sys.stderr)
-    parser.exit(2)
-
-args = parser.parse_args()
+    if args.time_seconds or args.time_ymd:
+        # numeric time column(s) repeated on every sub-second row
+        if args.time_seconds:
+            tbase = "{}, ".format(p.get_time_seconds())
+        else:
+            tbase = p.get_time_ymd_csv()
+        if args.f10_hz:
+            return [p.fix_csv(tbase + data +
+                              "{:.2f}, ".format(float(p.get_time_seconds()) + float(j)/10.) +
+                              p.get_10hz_csv(j)) for j in range(10)]
+        elif args.f25_hz:
+            return [p.fix_csv(tbase + data +
+                              "{:.2f}, ".format(float(p.get_time_seconds()) + float(j)/25.) +
+                              p.get_25hz_csv(j)) for j in range(25)]
+        else:
+            return [p.fix_csv(tbase + data)]
+    else:
+        # single ISO timestamp column, sub-second precision for high-freq rows
+        if args.f10_hz:
+            return [p.fix_csv(p.get_timestamp_iso(float(j)/10.) + ", " +
+                              data + p.get_10hz_csv(j)) for j in range(10)]
+        elif args.f25_hz:
+            return [p.fix_csv(p.get_timestamp_iso(float(j)/25.) + ", " +
+                              data + p.get_25hz_csv(j)) for j in range(25)]
+        else:
+            return [p.fix_csv(p.get_timestamp_iso() + ", " + data)]
 
 
+class day_tally(object):
+    """ streaming aggregation of one day's packets for --info """
 
-start_date = None
-end_date = None
-if len(args.dates) > 2:
-    parser.error('-d requires 1 or 2 dates (YYYY-MM-DD), got {}'.format(len(args.dates)))
-if len(args.dates) > 0:
-    try:
-        start_date = datetime.datetime.strptime(args.dates[0], '%Y-%m-%d').date()
-    except ValueError:
-        parser.error("Incorrect -d date format '{}', should be YYYY-MM-DD".format(args.dates[0]))
+    def __init__(self, date):
+        self.date = date
+        self.secs = 0
+        self.hours = ["." for _ in range(24)]
+        self.hour = -1
+        self.has_pulse = False
 
-if len(args.dates) > 1:
-    try:
-        end_date = datetime.datetime.strptime(args.dates[1], '%Y-%m-%d').date()
-    except ValueError:
-        parser.error("Incorrect -d date format '{}', should be YYYY-MM-DD".format(args.dates[1]))
+    def add(self, p):
+        self.secs += 1
+        if p.has_pulse:
+            self.has_pulse = True
+        if p.hour > self.hour:
+            self.hour = p.hour
+            self.hours[self.hour] = 'O' if self.has_pulse else '+'
+            self.has_pulse = False
 
-
-# Should probably ensure these files all have the same root...
-filesNNN = glob.glob('*.[0-9][0-9][0-9]')
-filesNNN.sort()
-
-if not filesNNN:
-    print("No raw data files (*.nnn) found in current directory", file=sys.stderr)
-    sys.exit(1)
-
-packets = []
-thispacket = None
-packetsize = 256
+    def render(self):
+        # one char per hour: '.' no data, '+' flow data, 'O' pulse oximeter
+        return "{} {} {}\n".format(self.date.isoformat(),
+                                   "".join(self.hours),
+                                   s2HMS(self.secs))
 
 
-for datafile in filesNNN:
-    with  open(datafile, "rb") as f:
-        databuff = f.read()
-
-    oldday = -1
-    p = 0 # pointer into byte array
-    while p < (len(databuff) - packetsize):
-        #print(i)
-
-        val = int(struct.unpack("H",databuff[p:p+2])[0])
-        thispacket = packet(p, databuff[p:p+packetsize])
-        p += packetsize
-        packets.append(thispacket)
-
-        if thispacket.day != oldday and not args.quiet:
-            if thispacket.date == start_date:
-                print("Found start date {}.".format(start_date.isoformat()))
-            oldday = thispacket.day
-            print("reading data from {}".format(thispacket.datestr))
-
-if not args.quiet:
-    print("{:d} packets found in {} files".format(len(packets), len(filesNNN)))
- 
-
-if args.info:
-    print(get_day_info(packets))
-    sys.exit(0)
+def iter_packets(databuff):
+    """ yield a packet for each 256-byte block in the buffer """
+    for off in range(0, len(databuff) - PACKET_SIZE, PACKET_SIZE):
+        yield packet(databuff[off:off+PACKET_SIZE])
 
 
-if start_date is None:
-    #default to beginning of data
-    start_date = packets[0].date
-else:
-    if end_date is None:
-        # if only start date is specified, use only that date
+def date_bounds(databuff):
+    """ exact (min, max) packet dates in a file, cheap timestamp-only pass """
+    lo = None
+    hi = None
+    for off in range(0, len(databuff) - PACKET_SIZE, PACKET_SIZE):
+        y, m, d = struct.unpack("HBBBBB",
+                                databuff[off+PACKET_SIZE-8:off+PACKET_SIZE-1])[:3]
+        try:
+            dt = datetime.date(y, m, d)
+        except ValueError:
+            continue
+        if lo is None or dt < lo:
+            lo = dt
+        if hi is None or dt > hi:
+            hi = dt
+    return lo, hi
+
+
+def note_new_day(p, start_date, args):
+    """ print progress when a new date is first seen while reading """
+    if not args.quiet:
+        if start_date is not None and p.date == start_date:
+            print("Found start date {}.".format(start_date.isoformat()))
+        print("reading data from {}".format(p.datestr))
+
+
+def do_info(files, args):
+    """ --info: print a day-by-day summary, read only, never writes a file """
+    tally = None
+    outlines = []
+    parsed = 0
+    last_ord = None
+    for datafile in files:
+        with open(datafile, "rb") as f:
+            databuff = f.read()
+        for p in iter_packets(databuff):
+            parsed += 1
+            if last_ord != p.ordinal:
+                last_ord = p.ordinal
+                note_new_day(p, None, args)
+            if tally is None or tally.date != p.date:
+                if tally is not None:
+                    outlines.append(tally.render())
+                tally = day_tally(p.date)
+            tally.add(p)
+    if tally is not None:
+        outlines.append(tally.render())
+
+    if not args.quiet:
+        print("{:d} packets found in {} files".format(parsed, len(files)))
+    sys.stdout.write("".join(outlines))
+    return 0
+
+
+def do_write(files, args, start_date, end_date):
+    """ stream packets to the csv file: header first, then one buffered row
+    per packet. Packets outside the requested range are dropped as they are
+    read, and whole files outside the range are skipped entirely."""
+    parsed = 0
+    written = 0
+    last_read_ord = None
+    last_write_ord = None
+    buffer = []
+
+    def flush():
+        if buffer:
+            outf.writelines(buffer)
+            buffer[:] = []
+
+    with open(args.output, 'w') as outf:
+        outf.write(make_header(args) + "\n")
+
+        for datafile in files:
+            with open(datafile, "rb") as f:
+                databuff = f.read()
+
+            if start_date is not None:
+                lo, hi = date_bounds(databuff)
+                if lo is None or hi < start_date or lo > end_date:
+                    continue  # whole file outside the requested range
+
+            for p in iter_packets(databuff):
+                parsed += 1
+                if last_read_ord != p.ordinal:
+                    last_read_ord = p.ordinal
+                    note_new_day(p, start_date, args)
+
+                if start_date is not None and \
+                   not (start_date <= p.date <= end_date):
+                    continue  # out of range packet, drop it
+
+                if not args.quiet and p.ordinal != last_write_ord:
+                    last_write_ord = p.ordinal
+                    print("Writing {} data to {}".format(p.datestr,
+                                                         args.output))
+
+                rows = packet_rows(p, args)
+                buffer.extend(row + "\n" for row in rows)
+                written += len(rows)
+                if len(buffer) >= FLUSH_LINES:
+                    flush()
+        flush()
+
+    if not args.quiet:
+        print("{:d} packets found in {} files".format(parsed, len(files)))
+    if start_date is not None and written == 0:
+        print("No data found in range {} to {}.".format(
+              start_date.isoformat(), end_date.isoformat()), file=sys.stderr)
+    return 0
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description='Extract data from BMC RESmart raw data files')
+
+    parser.add_argument('--info', '-i',
+                        action='store_true',
+                        help='Prints readable summary of data and dates to stdout.')
+
+    parser.add_argument('--f25_hz', '-2',
+                        action='store_true',
+                        help='Print out all 25 Hz (flow) data. this will make output files 25x as big.')
+
+    parser.add_argument('--f10_hz', '-1',
+                        action='store_true',
+                        help='Print out all 10 Hz (pulse) data. this will make output files 10x as big.')
+
+    parser.add_argument('--all_data', '-a',
+                        action='store_true',
+                        help='Print out all 1Hz data fields known or unknown')
+
+    parser.add_argument('--time_ymd', '-y',
+                        action='store_true',
+                        help='Print timestamp in Y, M, D, H, M, S format')
+
+    parser.add_argument('--time_seconds', '-s',
+                        action='store_true',
+                        help='Print timestamp in seconds since beginning of year')
+
+    parser.add_argument('--quiet', '-q',
+                        action='store_true',
+                        help='Do not print progress and info to stderr')
+
+    parser.add_argument('--output', '-o',
+                        help='Output data CSV file (default: %(default)s); it overwrites existing data.',
+                        default='RESmart_data.csv')
+
+    parser.add_argument('--dates', '-d', nargs='+',
+                        help='select date range in YYYY-MM-DD format. Single date is one day, two dates are start and end of time range.',
+                        default=[])
+
+    return parser
+
+
+def parse_dates(args, parser):
+    # returns (start_date, end_date); None,None when -d was not given
+    start_date = None
+    end_date = None
+    if len(args.dates) > 2:
+        parser.error('-d requires 1 or 2 dates (YYYY-MM-DD), got {}'.format(len(args.dates)))
+    if len(args.dates) > 0:
+        try:
+            start_date = datetime.datetime.strptime(args.dates[0], '%Y-%m-%d').date()
+        except ValueError:
+            parser.error("Incorrect -d date format '{}', should be YYYY-MM-DD".format(args.dates[0]))
+    if len(args.dates) > 1:
+        try:
+            end_date = datetime.datetime.strptime(args.dates[1], '%Y-%m-%d').date()
+        except ValueError:
+            parser.error("Incorrect -d date format '{}', should be YYYY-MM-DD".format(args.dates[1]))
+    if start_date is not None and end_date is None:
+        # a single date means exactly that day
         end_date = start_date
-
-if end_date is None:
-    #default to end of data
-    end_date = packets[-1].date 
-
-#print(start_date)
-#print(end_date)
-
-with open(args.output, 'w') as outf:
-    outf.write(make_header(packets[0], args) + "\n")
-
-    day = -1
-    for i, p in enumerate(packets):
-
-        if p.date >= start_date and p.date <= end_date:
+    return start_date, end_date
 
 
-            if p.ordinal != day and not args.quiet:
-                day = p.ordinal
-                print("Writing {} data to {}".format(p.datestr,
-                                                     args.output))
+def main():
+    if sys.version_info.major < 3:
+        print("sorry, requires Python 3.")
+        sys.exit(1)
 
-            if args.all_data:
-                data = p.get_all_values_csv()
-            else:
-                data = p.get_known_values_csv()
+    parser = build_parser()
 
-            if args.time_seconds or args.time_ymd:
-                # numeric time column(s) repeated on every sub-second row
-                if args.time_seconds:
-                    tbase = "{}, ".format(p.get_time_seconds())
-                else:
-                    tbase = p.get_time_ymd_csv()
-                if args.f10_hz:
-                    for j in range(10):
-                        tstr = tbase + data
-                        tstr += "{:.2f}, ".format(float(p.get_time_seconds()) + float(j)/10.)
-                        tstr += p.get_10hz_csv(j)
-                        outf.write(p.fix_csv(tstr) + "\n")
-                elif args.f25_hz:
-                    for j in range(25):
-                        tstr = tbase + data
-                        tstr += "{:.2f}, ".format(float(p.get_time_seconds()) + float(j)/25.)
-                        tstr += p.get_25hz_csv(j)
-                        outf.write(p.fix_csv(tstr) + "\n")
-                else:
-                    outf.write(p.fix_csv(tbase + data) + "\n")
-            else:
-                # single ISO timestamp column, sub-second precision for high-freq rows
-                if args.f10_hz:
-                    for j in range(10):
-                        tstr = p.get_timestamp_iso(float(j)/10.) + ", "
-                        tstr += data + p.get_10hz_csv(j)
-                        outf.write(p.fix_csv(tstr) + "\n")
-                elif args.f25_hz:
-                    for j in range(25):
-                        tstr = p.get_timestamp_iso(float(j)/25.) + ", "
-                        tstr += data + p.get_25hz_csv(j)
-                        outf.write(p.fix_csv(tstr) + "\n")
-                else:
-                    outf.write(p.fix_csv(p.get_timestamp_iso() + ", " + data) + "\n")            
+    # no arguments at all: show help and exit without reading or writing any files
+    if len(sys.argv) == 1:
+        parser.print_help(sys.stderr)
+        parser.exit(2)
+
+    args = parser.parse_args()
+    start_date, end_date = parse_dates(args, parser)
+
+    # Should probably ensure these files all have the same root...
+    files = glob.glob('*.[0-9][0-9][0-9]')
+    files.sort()
+
+    if not files:
+        print("No raw data files (*.nnn) found in current directory",
+              file=sys.stderr)
+        sys.exit(1)
+
+    if args.info:
+        return do_info(files, args)
+
+    return do_write(files, args, start_date, end_date)
 
 
-
-
-
-
+if __name__ == '__main__':
+    sys.exit(main())
