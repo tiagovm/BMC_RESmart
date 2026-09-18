@@ -1,12 +1,28 @@
-"""Plotting helpers for RESmart session data.
+"""Plotting helpers and a standalone plotting CLI for RESmart sessions.
 
-Requires matplotlib (approved exception). Not for medical use.
+Requires matplotlib and pandas (approved exceptions). Not for medical use.
 
-The pyplot backend is left to the caller: ``analyze_cpap.py`` forces Agg
-for file output and leaves the default interactive backend for --show.
+Library use:
+    from plotting import plot_pressure_curve, plot_overlapped_sessions
+    fig, ax = plot_pressure_curve(session_df)
+
+CLI use (input must be the segmented CSV from step 5, i.e. the output of
+``analysis.py -o``, with a ``session_id`` column):
+    python plotting.py -i sessions.csv --session 3
+    python plotting.py -i sessions.csv --overlay 10
+    python plotting.py -i sessions.csv --wave resA --session 3
+
+The pyplot backend is left to the caller: the CLI forces Agg for file
+output and leaves the default interactive backend for --show. Pyplot is
+imported lazily inside the plot functions so the backend can be selected
+first.
 """
 
-import matplotlib.pyplot as plt
+import argparse
+import os
+
+import matplotlib
+
 import pandas as pd
 
 IPAP_RAW = "IPAP (0.5 cmH2O)"
@@ -18,6 +34,23 @@ EPAP_CMH2O = "EPAP_cmH2O"
 HOURS_SINCE_START = "hours_since_start"
 
 RAW_PER_CMH2O = 2.0
+
+_plt = None
+
+
+def _pyplot():
+    """Return the pyplot module, importing it lazily on first use.
+
+    Importing pyplot creates its backend, so this happens lazily inside the
+    functions to let a CLI call ``matplotlib.use("Agg")`` (for headless file
+    output) before any figure exists. Calling ``use()`` after pyplot is
+    already imported has no effect.
+    """
+    global _plt
+    if _plt is None:
+        from matplotlib import pyplot
+        _plt = pyplot
+    return _plt
 
 
 def plot_pressure_curve(session_df):
@@ -53,7 +86,7 @@ def plot_pressure_curve(session_df):
     start = df["timestamp"].iloc[0]
     end = df["timestamp"].iloc[-1]
 
-    fig, ax = plt.subplots(figsize=(14, 4))
+    fig, ax = _pyplot().subplots(figsize=(14, 4))
     ax.plot(df["timestamp"], df[IPAP_CMH2O], label="IPAP", color="tab:blue")
     ax.plot(df["timestamp"], df[EPAP_CMH2O], label="EPAP", color="tab:orange")
     ax.set_title(
@@ -108,8 +141,8 @@ def plot_overlapped_sessions(df, num_sessions=10, include_epap=False):
     if include_epap:
         sub[EPAP_CMH2O] = sub[EPAP_RAW] / RAW_PER_CMH2O
 
-    colors = plt.get_cmap("tab10")
-    fig, ax = plt.subplots(figsize=(14, 5))
+    colors = _pyplot().get_cmap("tab10")
+    fig, ax = _pyplot().subplots(figsize=(14, 5))
     for i, sid in enumerate(sids):
         part = sub[sub["session_id"] == sid]
         if part.empty:
@@ -176,7 +209,7 @@ def plot_waveform(session_df, channel="resA"):
     x = ts.iloc[::step]
     y = session_df[col].iloc[::step].astype(float)
 
-    fig, ax = plt.subplots(figsize=(14, 4))
+    fig, ax = _pyplot().subplots(figsize=(14, 4))
     ax.plot(x, y, color="tab:blue", linewidth=0.6)
     ax.set_title("Waveform {} - session {} ({:%Y-%m-%d %H:%M} -> {:%H:%M})".format(
         channel, sid, start, end))
@@ -187,3 +220,147 @@ def plot_waveform(session_df, channel="resA"):
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig, ax
+
+
+def read_segmented_csv(path):
+    """Read the step-5 output (a segmented CSV) for the plotting CLI.
+
+    The file must be the frame written by ``analysis.py -o``: cleaned,
+    chronologically sorted, with the ``session_id`` column added by
+    ``segment_sessions``. The standalone plotting CLI deliberately does not
+    re-run cleaning/segmentation — use ``analyze_cpap.py`` if you want the
+    whole workflow chained into one command.
+
+    The file is the output of ``analysis.py -o``, so it must be already
+    cleaned and chronologically sorted with a ``session_id`` column; column
+    names are stripped defensively. Raises a ValueError with a hint when the
+    sorted, instead of producing a meaningless plot.
+    """
+    df = pd.read_csv(path, parse_dates=["timestamp"])
+    df.columns = [c.strip() for c in df.columns]
+    if "session_id" not in df.columns:
+        raise ValueError(
+            "column 'session_id' not found in {}: run step 5 first "
+            "(python analysis.py <exported.csv> -o <segmented.csv>) "
+            "so the plot sees the sessions".format(path)
+        )
+    if not df["timestamp"].is_monotonic_increasing:
+        raise ValueError(
+            "timestamp must be chronologically sorted: run "
+            "clean_and_preprocess() and segment_sessions() first"
+        )
+    return df
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Plot RESmart session data (IPAP/EPAP pressure curves, "
+            "overlapped nights, or a high-rate waveform channel) from a "
+            "segmented CSV. Input is the step-5 output: a cleaned, "
+            "chronologically sorted CSV that already has the session_id "
+            "column (see README step 5, or combine all steps with "
+            "analyze_cpap.py)."
+        )
+    )
+    parser.add_argument("-i", "--input", required=True,
+                        help="segmented CSV from step 5 "
+                             "(python analysis.py out.csv -o sessions.csv)")
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--session", type=int, default=None,
+                        help="session_id to plot (default: most recent session)")
+    target.add_argument("--overlay", type=int, default=None,
+                        help="overlay the last N sessions on a relative "
+                             "hours-since-start time axis")
+    parser.add_argument("--overlay-epap", action="store_true",
+                        help="with --overlay, draw the EPAP curves as well")
+    parser.add_argument("--wave", default=None,
+                        choices=["resA", "resB", "resC", "pulse"],
+                        help="plot a high-rate waveform channel of the "
+                             "selected session instead of the pressure "
+                             "curves (the CSV must come from an export made "
+                             "with -2 or -1)")
+    parser.add_argument("-o", "--output", default=None,
+                        help="PNG file to write "
+                             "(default: pressure_session_<id>_<date>.png, "
+                             "overlapped_sessions_last_<N>.png or "
+                             "wave_<channel>_session_<id>_<date>.png next "
+                             "to the input)")
+    parser.add_argument("--show", action="store_true",
+                        help="display the plot on screen instead of writing a file")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+
+    if not args.show:
+        matplotlib.use("Agg")
+
+    df = read_segmented_csv(args.input)
+
+    session_ids = sorted(df["session_id"].unique())
+    if not session_ids:
+        print("no data found in {}".format(args.input))
+        return 1
+
+    if args.overlay:
+        fig, _ = plot_overlapped_sessions(
+            df, num_sessions=args.overlay, include_epap=args.overlay_epap)
+        sids = sorted(df["session_id"].unique())[-args.overlay:]
+        printed = ", ".join("{} ({:%b %d})".format(
+            s, df[df["session_id"] == s]["timestamp"].iloc[0]) for s in sids)
+        print("overlaying session ids: {}".format(printed))
+        if args.show:
+            _pyplot().show()
+            return 0
+        if args.output is None:
+            out = os.path.join(
+                os.path.dirname(os.path.abspath(args.input)),
+                "overlapped_sessions_last_{:d}.png".format(len(sids)))
+        else:
+            out = args.output
+        fig.savefig(out, dpi=110)
+        print("wrote {}".format(out))
+        return 0
+
+    if args.session is None:
+        sid = session_ids[-1]
+    elif args.session in session_ids:
+        sid = args.session
+    else:
+        print("session {} not found; available session ids: {}".format(
+            args.session, session_ids))
+        return 1
+
+    session_df = df[df["session_id"] == sid]
+
+    if args.wave:
+        fig, _ = plot_waveform(session_df, channel=args.wave)
+        default_name = "wave_{0}_session_{1}_{2:%Y-%m-%d}.png".format(
+            args.wave, sid, session_df["timestamp"].iloc[0])
+    else:
+        fig, _ = plot_pressure_curve(session_df)
+        default_name = "pressure_session_{0}_{1:%Y-%m-%d}.png".format(
+            sid, session_df["timestamp"].iloc[0])
+
+    start = session_df["timestamp"].iloc[0]
+    end = session_df["timestamp"].iloc[-1]
+    print("session {}: {:%Y-%m-%d %H:%M} -> {:%H:%M} ({} rows)".format(
+        sid, start, end, len(session_df)))
+
+    if args.show:
+        _pyplot().show()
+        return 0
+
+    if args.output is None:
+        out = os.path.join(os.path.dirname(os.path.abspath(args.input)), default_name)
+    else:
+        out = args.output
+    fig.savefig(out, dpi=110)
+    print("wrote {}".format(out))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

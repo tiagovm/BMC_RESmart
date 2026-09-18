@@ -9,7 +9,7 @@ Requires pandas (same approved exception as preprocess.py). Not for medical
 use.
 """
 
-import sys
+import argparse
 
 import pandas as pd
 
@@ -55,14 +55,26 @@ def segment_sessions(df, limit_hours=4):
     return df
 
 
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Segment a RESmart CSV into sessions (nights of use).",
+    )
+    parser.add_argument("input", help="CSV export from resmart_parse.py")
+    parser.add_argument("limit_hours", type=float, nargs="?", default=4,
+                        help="a time gap longer than this between consecutive "
+                             "packets starts a new session (default: 4 h)")
+    parser.add_argument("-o", "--output", default=None,
+                        help="also write the segmented DataFrame to a CSV "
+                             "(with the session_id column) so a later step "
+                             "can plot it, e.g. plotting.py")
+    return parser
+
+
 def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or "-h" in argv or "--help" in argv:
-        print(__doc__)
-        print("usage: python analysis.py out.csv [limit_hours]", file=sys.stderr)
-        return 2
-    limit_hours = float(argv[1]) if len(argv) > 1 else 4
-    df = segment_sessions(clean_and_preprocess(argv[0]), limit_hours=limit_hours)
+    args = build_parser().parse_args(argv)
+    df = segment_sessions(
+        clean_and_preprocess(args.input), limit_hours=args.limit_hours
+    )
     rows = df.groupby("session_id").size()
     span = df.groupby("session_id")["timestamp"].agg(["min", "max"])
     merged = pd.concat([rows.rename("rows"), span], axis=1)
@@ -71,6 +83,9 @@ def main(argv=None):
         print(f"session {sid:>4d}: {r['min']:%Y-%m-%d %H:%M} -> "
               f"{r['max']:%H:%M}  {r['rows']:,} s  ({r['duration']})")
     print(f"{len(merged)} session(s), {len(df):,} rows total")
+    if args.output is not None:
+        df.to_csv(args.output, index=False)
+        print("wrote {}".format(args.output))
     return 0
 
 

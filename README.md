@@ -101,9 +101,13 @@ contiguous block of use, isolated by large gaps in the timeline:
     from analysis import segment_sessions
     df = segment_sessions(df)                 # default: new session after 4 h
 
-or standalone:
+or standalone (which also prints a per-session summary):
 
-    python analysis.py out.csv                # optional: python analysis.py out.csv 6
+    python analysis.py out.csv                # analysis.py out.csv 6 (limit hours)
+
+To keep the segmented frame for the next steps, persist it with `-o`:
+
+    python analysis.py out.csv -o sessions.csv
 
 `segment_sessions` adds a `session_id` column (integer, sessions start at
 1) that every row of the same night shares. Only a gap of more than
@@ -112,13 +116,57 @@ or standalone:
 do not. It requires the preprocessed, chronologically sorted DataFrame
 and raises an error otherwise. See `DESIGN.md` for the algorithm.
 
-### 6. Analyze and visualize
+### 6. Plot the sessions (standalone)
 
 The cleaned, session-tagged DataFrame from steps 4-5 is the common input
 for the analysis and visualization scripts (statistics per session,
 plots, etc.). Obey the data contract below when writing them.
 
-The plotting pipeline steps 1-5 are chained into a single CLI
+Plotting is its own step (`plotting.py`), fed by the segmented CSV saved
+at the end of step 5 with `analysis.py -o`:
+
+    python plotting.py -i sessions.csv --session 3        # night 3 -> PNG
+    python plotting.py -i sessions.csv --overlay 10       # last 10 nights overlapped
+    python plotting.py -i sessions.csv --overlay 10 --overlay-epap   # ... + EPAP
+    python plotting.py -i sessions.csv --show             # most recent night, on screen
+    python plotting.py -i sessions.csv -o night.png
+
+To plot the measured 25 Hz waveform (the configured IPAP/EPAP are flat
+presets, see Data format), the *export* must have used `-2`, and the same
+steps 4-5 then produce a segmented CSV with the wave columns. Because
+`analysis.py` cleans internally, only two commands are needed:
+
+    python resmart_parse.py -2 -o wave.csv -d 2026-07-21
+    python analysis.py wave.csv -o sessions.csv           # clean + segment + save
+    python plotting.py -i sessions.csv --wave resA        # also: resB, resC, pulse
+
+- `-i/--input` is the segmented CSV from step 5 (already cleaned, sorted,
+  with `session_id`); the plotting step deliberately does not re-run
+  cleaning or segmentation — a file without `session_id` gives a
+  descriptive error. Without `--session` the most recent night is used;
+  an unknown id prints the available ids.
+- `--session N` and `--overlay N` are mutually exclusive. `--overlay N`
+  overlays the last `N` nights on a common time axis of *hours since each
+  session started* (sessions begin at different wall-clock times, so a
+  relative axis is what makes them line up for comparison);
+  `--overlay-epap` adds the EPAP curves in dashed faint lines. If fewer
+  sessions exist than requested, all of them are drawn.
+- `--wave <channel>` requires a CSV exported with `-2` (resA/resB/resC)
+  or `-1` (pulse); `--session N` still selects the night (default: most
+  recent), the output is `wave_<channel>_session_<id>_<date>.png`.
+- The plot shows the night's IPAP/EPAP pressure curves in cmH2O (the raw
+  device values are stored in 0.5 cmH2O steps and divided by 2), saved as
+  `pressure_session_<id>_<date>.png` / `overlapped_sessions_last_<N>.png`
+  next to the input unless `-o` is given; `--show` displays it on screen
+  instead (no Agg backend).
+- Programmatic use: `plot_pressure_curve(session_df)` and
+  `plot_overlapped_sessions(df, num_sessions=10)` from `plotting.py`
+  return the Matplotlib figure/axes for a single-session DataFrame.
+
+### 7. All-in-one option (analyze_cpap.py)
+
+For convenience, steps 4-6 can be chained into a single command that
+takes the raw step-3 export and does clean → segment → plot internally
 (`analyze_cpap.py`):
 
     python analyze_cpap.py -i out.csv --session 3        # night 3 -> PNG
@@ -127,32 +175,12 @@ The plotting pipeline steps 1-5 are chained into a single CLI
     python analyze_cpap.py -i out.csv --show             # most recent night, on screen
     python analyze_cpap.py -i out.csv -o night.png --limit-hours 6
 
-To plot the measured 25 Hz waveform (the configured IPAP/EPAP are flat
-presets, see Data format), the CSV must be exported with `-2`:
-
-    python resmart_parse.py -2 -o wave.csv -d 2026-07-21
-    python analyze_cpap.py -i wave.csv --wave resA       # also: resB, resC, pulse
-
-- `--wave <channel>` requires a CSV exported with `-2` (resA/resB/resC)
-  or `-1` (pulse); `--session N` still selects the night (default: most
-  recent), the output is `wave_<channel>_session_<id>_<date>.png`.
-
-- `-i/--input` is the CSV from step 3; `--session N` picks a session
-  (default: the most recent one). Without `--session` the most recent
-  night is used. An unknown id prints the available ids.
-- `--overlay N` overlays the last `N` nights on a common time axis of
-  *hours since each session started* (sessions begin at different
-  wall-clock times, so a relative axis is what makes them line up for
-  comparison); `--overlay-epap` adds the EPAP curves in dashed faint
-  lines. If fewer sessions exist than requested, all of them are drawn.
-- The plot shows the night's IPAP/EPAP pressure curves in cmH2O (the raw
-  device values are stored in 0.5 cmH2O steps and divided by 2), saved as
-  `pressure_session_<id>_<date>.png` / `overlapped_sessions_last_<N>.png`
-  next to the input unless `-o` is given; `--show` displays it on screen
-  instead.
-- Programmatic use: `plot_pressure_curve(session_df)` and
-  `plot_overlapped_sessions(df, num_sessions=10)` from `plotting.py`
-  return the Matplotlib figure/axes for a single-session DataFrame.
+It shares the target/`--overlay`/`--overlay-epap`/`--wave`/`-o`/`--show`
+flags with the plotting CLI of step 6 and adds `--limit-hours` as a
+passthrough to the segmentation; its input is the raw parser CSV (step 3).
+Use the step-by-step commands when you want to keep and reuse the
+intermediate segmented CSV, or this single command when you only want one
+plot of the full pipeline.
 
 `graph_data.py` is an unfinished placeholder GUI and does not read RESmart
 data yet.
@@ -182,6 +210,10 @@ should assume:
   at 1 that identifies the night (contiguous block of use); new sessions
   start only where the gap between consecutive rows exceeds
   `limit_hours`. It assumes chronologically sorted data.
+- The standalone plotting CLI (step 6) reads the segmented CSV written by
+  `analysis.py -o` as-is: `timestamp` in ISO format, the `session_id`
+  column, and the data columns (no index row is written). Do not re-order
+  the rows afterwards — `plotting.py` refuses unsorted timestamps.
 
 ## CLI reference
 

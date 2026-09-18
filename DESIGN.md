@@ -148,6 +148,18 @@ pipeline order.
 
 ### Tertiary processing: plotting (`plotting.py` + `analyze_cpap.py`)
 
+Plotting is a two-layer design: `plotting.py` holds the plot functions and a
+**standalone CLI** that consumes the step-5 artifact, while `analyze_cpap.py`
+is a convenience wrapper that chains steps 4-6 into one command from the raw
+step-3 export.
+
+The standalone step (input = segmented CSV written by `analysis.py -o`,
+never re-cleaned/re-segmented):
+
+```
+read_segmented_csv(sessions.csv)  →  plot_pressure_curve / plot_overlapped_sessions / plot_waveform  →  save/display
+```
+
 `analyze_cpap.py` chains the whole workflow into one command:
 
 ```
@@ -155,14 +167,30 @@ read_csv → clean_and_preprocess → segment_sessions
         → filter to one session_id → plot_pressure_curve → save/display
 ```
 
-- CLI: `-i/--input` (required), `--session N` (default: most recent),
-  `--overlay N` (mutually exclusive with `--session`, overlays the last N
-  sessions via `plot_overlapped_sessions`), `--overlay-epap`,
-  `-o/--output` PNG (default: `pressure_session_<id>_<date>.png` /
-  `overlapped_sessions_last_<N>.png` next to the input), `--show`
-  (interactive backend), `--limit-hours` (passthrough).
-  The pyplot backend is chosen before importing `plotting.py`: Agg for file
-  output, the default interactive one for `--show`.
+- Plotting CLI (`python plotting.py -i sessions.csv ...`): flags
+  `-i/--input` (required; the segmented CSV from `analysis.py -o`),
+  `--session N` (default: most recent), `--overlay N` (mutually exclusive,
+  overlays the last N sessions), `--overlay-epap`,
+  `--wave {resA,resB,resC,pulse}`, `-o/--output` PNG (default
+  `pressure_session_<id>_<date>.png` / `overlapped_sessions_last_<N>.png` /
+  `wave_<channel>_session_<id>_<date>.png` next to the input), `--show`.
+  It deliberately does **not** re-run cleaning/segmentation — the step-5
+  artifact is the single source of truth, so the standalone plot can never
+  disagree with a later `analyze_cpap.py` run on the same steps.
+- `analyze_cpap.py` (all-in-one convenience wrapper): same target/overlay/
+  wave/output/show flags, `--limit-hours` added as a segmentation
+  passthrough, and `-i` takes the raw step-3 export; it runs
+  `clean_and_preprocess` → `segment_sessions` → the same plotting functions.
+- Backend handling: pyplot is imported **lazily** inside the plot functions
+  (via `_pyplot()`), so both CLIs can call `matplotlib.use("Agg")` before the
+  first figure exists — calling `use()` after pyplot is imported has no
+  effect. Agg is forced for file output, the default interactive backend is
+  kept for `--show`.
+- `read_segmented_csv(path)`: the plotting CLI's entry point. Reads the CSV
+  with pandas (ISO `timestamp` parsed), strips column names defensively, and
+  raises descriptive errors when `session_id` is missing (→ run step 5 /
+  `analysis.py -o`) or timestamps are unsorted (→ run `clean_and_preprocess`
+  first).
 - `plot_pressure_curve(session_df)` converts the raw pressures to cmH2O by
   dividing by 2 — the device stores IPAP/EPAP in 0.5 cmH2O steps, so a raw
   `20` means `10.0 cmH2O` — into `IPAP_cmH2O`/`EPAP_cmH2O` columns, then plots
@@ -266,14 +294,17 @@ read_csv → clean_and_preprocess → segment_sessions
   contract for downstream tools" section in `README.md`.
 - [done] `analysis.py`: `segment_sessions` — assigns each row a 1-based
   `session_id` for its night of use from the gap between consecutive rows
-  (see "Secondary processing" in the architecture section).
+  (see "Secondary processing" in the architecture section). The standalone
+  `main` now also persists the segmented frame via `-o` so a later step can
+  plot it from the saved artifact.
 - [done] `plotting.py` + `analyze_cpap.py` — `plot_pressure_curve` derives
   `IPAP_cmH2O`/`EPAP_cmH2O` (raw / 2) and plots a session's pressure curves;
   `plot_overlapped_sessions` overlays the last N nights on a relative
   hours-since-start axis; `plot_waveform` plots a high-rate channel
-  (resA/B/C at 25 Hz, pulse at 10 Hz) from a `-2`/`-1` export; the CLI
-  chains clean → segment → filter/overlay/wave → plot → save (or `--show`)
-  via `--session` / `--overlay` / `--wave`.
+  (resA/B/C at 25 Hz, pulse at 10 Hz) from a `-2`/`-1` export. `plotting.py`
+  is now also a standalone CLI consuming the step-5 CSV (`--session` /
+  `--overlay` / `--wave` / `-o` / `--show`); `analyze_cpap.py` remains the
+  all-in-one wrapper that chains clean → segment → plot in one command.
   Next step: per session-aggregated statistics (duration, AHI-style indices,
   pressure/wave profiles) in `analysis.py`, then richer plots.
 - `graph_data.py`: turn the placeholder into a real viewer that reads the
