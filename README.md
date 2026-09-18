@@ -92,12 +92,33 @@ rows are sorted chronologically (wrap-around repaired), invalid sensor
 reads (65535 / 0xFFFF) are converted to NaN, column names are stripped,
 and the index is reset. See the module docstring for the exact steps.
 
-### 5. Analyze and visualize
+### 5. Segment the data into sessions (nights of use)
 
-The cleaned DataFrame from step 4 is the common input for the analysis
-and visualization scripts (statistics per night, plots, etc.). Obey the
-data contract below when writing them. `graph_data.py` is an unfinished
-placeholder GUI and does not read RESmart data yet.
+The device records one packet per second while it is powered on (a night
+of use) and nothing while it is off (the daytime). A session is a
+contiguous block of use, isolated by large gaps in the timeline:
+
+    from analysis import segment_sessions
+    df = segment_sessions(df)                 # default: new session after 4 h
+
+or standalone:
+
+    python analysis.py out.csv                # optional: python analysis.py out.csv 6
+
+`segment_sessions` adds a `session_id` column (integer, sessions start at
+1) that every row of the same night shares. Only a gap of more than
+`limit_hours` between consecutive rows starts a new session; small gaps
+(duplicate same-second rows at the wrap, missing seconds inside a night)
+do not. It requires the preprocessed, chronologically sorted DataFrame
+and raises an error otherwise. See `DESIGN.md` for the algorithm.
+
+### 6. Analyze and visualize
+
+The cleaned, session-tagged DataFrame from steps 4-5 is the common input
+for the analysis and visualization scripts (statistics per session,
+plots, etc.). Obey the data contract below when writing them.
+`graph_data.py` is an unfinished placeholder GUI and does not read
+RESmart data yet.
 
 ## Data contract for downstream tools
 
@@ -120,6 +141,10 @@ should assume:
   rate for the first ~30 seconds after the start of airflow, or SpO2 /
   heart rate when no oximeter is attached. Replace with NaN before
   statistics or plotting (preprocess does this).
+- After `segment_sessions`, the column `session_id` is an int starting
+  at 1 that identifies the night (contiguous block of use); new sessions
+  start only where the gap between consecutive rows exceeds
+  `limit_hours`. It assumes chronologically sorted data.
 
 ## CLI reference
 

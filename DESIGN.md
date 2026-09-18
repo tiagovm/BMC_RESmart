@@ -4,7 +4,8 @@ Design documentation for the BMC RESmart GII parser.
 
 - Status: reverse-engineered, unofficial, NOT for medical use.
 - Targets: `resmart_parse.py` (parsing + CLI), `preprocess.py` (CSV cleanup, pandas),
-  and `graph_data.py` (incomplete GUI).
+  `analysis.py` (pandas helpers such as session segmentation), and
+  `graph_data.py` (incomplete GUI).
 - Requirements on the toolchain are minimal: Python 3, standard library only.
 
 ## 1. Requirements
@@ -113,6 +114,35 @@ Key components:
 Memory stays proportional to one packet plus the write buffer, not to the size
 of the dump.
 
+### Secondary processing: session segmentation (`analysis.py`)
+
+The parser/preprocess pipeline ends with a chronologically sorted DataFrame of
+one-second packets. The device records only while powered on (nights) and
+nothing during the day, so the exported history is a sequence of *sessions*
+— contiguous blocks of use separated by long daytime gaps. Because the SD
+card holds months of history, session boundaries cannot come from file or
+date boundaries and must be derived from the timeline itself:
+
+```
+clean_and_preprocess(out.csv)  →  segment_sessions(df, limit_hours=4)  →  per-session stats/plots
+```
+
+`segment_sessions` logic:
+
+1. `gap = df["timestamp"].diff()` — timedelta between consecutive rows (the
+   first row has no predecessor).
+2. A boolean marker starts a new session where `gap > limit_hours`
+   (default 4 h, a full daytime off-window).
+3. `session_id = marker.cumsum() + 1` — the cumulative sum of the booleans
+   assigns a new integer to each run, so every row between markers shares it.
+   IDs start at 1.
+
+Small gaps — duplicate same-second rows (wrap) and seconds missing inside a
+night — fall below the threshold and do not split a session. `limit_hours=0`
+degenerates to one session per row (allowed, useless). The function raises a
+`ValueError` if the frame is not already sorted ascending, enforcing the
+pipeline order.
+
 ## 4. Key design decisions
 
 - **Streaming over accumulate-then-write.** The original implementation parsed
@@ -181,6 +211,11 @@ of the dump.
   ISO timestamps, sorts chronologically (wrap repair), maps 65535 to NaN,
   strips column names and resets the index. Consumers rely on the "Data
   contract for downstream tools" section in `README.md`.
+- [done] `analysis.py`: `segment_sessions` — assigns each row a 1-based
+  `session_id` for its night of use from the gap between consecutive rows
+  (see "Secondary processing" in the architecture section). Next step: per
+  session-aggregated statistics (duration, AHI-style indices, pressure/wave
+  profiles) consuming this column in `analysis.py`.
 - `graph_data.py`: turn the placeholder into a real viewer that reads the
   cleaned CSV (daily hour strip chart, IPAP/EPAP/flow traces, spO2 overlay).
 - Optional unit conversion flag (e.g. report IPAP/EPAP in cmH2O instead of raw
