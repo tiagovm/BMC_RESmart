@@ -55,7 +55,7 @@ From `README.md` plus reverse engineering; the code in
 
   | index | name        | unit         | notes                          |
   |------:|-------------|--------------|--------------------------------|
-  |     1 | Reslex      | (dimensionless, 1-5) |                     |
+  |     1 | usage_day   | (dimensionless)        | day-of-use counter      |
   |     2 | IPAP        | 0.5 cmH2O    | divide by 2 for cmH2O          |
   |     3 | EPAP        | 0.5 cmH2O    | divide by 2 for cmH2O          |
   |    99 | tidal_vol   | L/min        |                                |
@@ -179,6 +179,13 @@ read_csv → clean_and_preprocess → segment_sessions
   can be spotted. A `tab10` colormap keeps the curves distinguishable;
   EPAP is opt-in, drawn as faint dashed lines. The pipeline takes the
   `--overlay` branch and skips the single-session filter.
+- `plot_waveform(session_df, channel="resA")` plots the measured 25 Hz
+  (resA/resB/resC) or 10 Hz (pulse) channels. These are only present in a
+  CSV exported with `-2`/`-1`: the parser emits one row per sub-second
+  sample with a millisecond timestamp, so the channel column is already a
+  dense series (25/10 rows per second in order). Values are drawn as raw
+  words (scaling unknown); long sessions are decimated to ≤200k points.
+  The CLI selects it with `--wave <channel>`.
 
 ## 4. Key design decisions
 
@@ -225,6 +232,15 @@ read_csv → clean_and_preprocess → segment_sessions
   Treat it as opaque.
 - Word meanings beyond the seven known fields are guesses; the `resA/B/C` and
   `pulse` arrays have no confirmed physical interpretation.
+- Word 1 is **not** Reslex (the device stores no such 1-5 softness setting
+  here): it is a counter that increments ~1/day of use (320 -> 406 across
+  this 91-day dump), with edge transitions at power-on and around midnight.
+  It is surfaced in the CSV as `usage_day`; its exact tick semantics are
+  unresolved.
+- Words 2/3 (IPAP/EPAP) are the machine's *configured* pressures, not
+  measured instantaneous pressure: in fixed CPAP mode both are constant and
+  identical (raw 13 = 6.5 cmH2O in 100% of this dump's packets). The
+  per-breath measured signals are the 25 Hz arrays (words 4-78).
 - Dump timestamps are not globally sorted (wrap file); the CSV preserves file
   order. `--info` can therefore list a date twice (two time segments).
 - The final 256-byte packet of each file is skipped, losing up to 1 s per file.
@@ -254,8 +270,10 @@ read_csv → clean_and_preprocess → segment_sessions
 - [done] `plotting.py` + `analyze_cpap.py` — `plot_pressure_curve` derives
   `IPAP_cmH2O`/`EPAP_cmH2O` (raw / 2) and plots a session's pressure curves;
   `plot_overlapped_sessions` overlays the last N nights on a relative
-  hours-since-start axis; the CLI chains clean → segment → filter/overlay →
-  plot → save (or `--show`) and exposes them via `--session` / `--overlay`.
+  hours-since-start axis; `plot_waveform` plots a high-rate channel
+  (resA/B/C at 25 Hz, pulse at 10 Hz) from a `-2`/`-1` export; the CLI
+  chains clean → segment → filter/overlay/wave → plot → save (or `--show`)
+  via `--session` / `--overlay` / `--wave`.
   Next step: per session-aggregated statistics (duration, AHI-style indices,
   pressure/wave profiles) in `analysis.py`, then richer plots.
 - `graph_data.py`: turn the placeholder into a real viewer that reads the

@@ -41,10 +41,18 @@ def build_parser():
                              "hours-since-start time axis")
     parser.add_argument("--overlay-epap", action="store_true",
                         help="with --overlay, draw the EPAP curves as well")
+    parser.add_argument("--wave", default=None,
+                        choices=["resA", "resB", "resC", "pulse"],
+                        help="plot a high-rate waveform channel of the "
+                             "selected session instead of the pressure "
+                             "curves (input CSV must have been exported "
+                             "with -2 or -1)")
     parser.add_argument("-o", "--output", default=None,
                         help="PNG file to write "
-                             "(default: pressure_session_<id>_<date>.png or "
-                             "overlapped_sessions_last_<N>.png next to the input)")
+                             "(default: pressure_session_<id>_<date>.png, "
+                             "overlapped_sessions_last_<N>.png or "
+                             "wave_<channel>_session_<id>_<date>.png next "
+                             "to the input)")
     parser.add_argument("--show", action="store_true",
                         help="display the plot on screen instead of writing a file")
     parser.add_argument("--limit-hours", type=float, default=4,
@@ -59,7 +67,7 @@ def main(argv=None):
     if not args.show:
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from plotting import plot_overlapped_sessions, plot_pressure_curve
+    from plotting import plot_overlapped_sessions, plot_pressure_curve, plot_waveform
 
     df = segment_sessions(
         clean_and_preprocess(args.input), limit_hours=args.limit_hours
@@ -102,7 +110,14 @@ def main(argv=None):
 
     session_df = df[df["session_id"] == sid]
 
-    fig, _ = plot_pressure_curve(session_df)
+    if args.wave:
+        fig, _ = plot_waveform(session_df, channel=args.wave)
+        default_name = "wave_{0}_session_{1}_{2:%Y-%m-%d}.png".format(
+            args.wave, sid, session_df["timestamp"].iloc[0])
+    else:
+        fig, _ = plot_pressure_curve(session_df)
+        default_name = "pressure_session_{0}_{1:%Y-%m-%d}.png".format(
+            sid, session_df["timestamp"].iloc[0])
 
     start = session_df["timestamp"].iloc[0]
     end = session_df["timestamp"].iloc[-1]
@@ -114,8 +129,7 @@ def main(argv=None):
         return 0
 
     if args.output is None:
-        out = os.path.join(os.path.dirname(os.path.abspath(args.input)),
-                           "pressure_session_{0}_{1:%Y-%m-%d}.png".format(sid, start))
+        out = os.path.join(os.path.dirname(os.path.abspath(args.input)), default_name)
     else:
         out = args.output
     fig.savefig(out, dpi=110)

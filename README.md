@@ -15,7 +15,7 @@ Data Analysis Software also made by BMC. Since this is not freely
 available, I have created this software as an alternative.
 
 This software extracts raw data for your own analysis, including time
-and duration of use, IPAP, EPAP, and Reslex pressure settings,
+and duration of use, IPAP, EPAP, and pressure settings,
 airflow, tidal volume, respiration rate, as well as SP02 and pulse
 rate if the auxiliary pulse oximeter is used.
 
@@ -127,6 +127,16 @@ The plotting pipeline steps 1-5 are chained into a single CLI
     python analyze_cpap.py -i out.csv --show             # most recent night, on screen
     python analyze_cpap.py -i out.csv -o night.png --limit-hours 6
 
+To plot the measured 25 Hz waveform (the configured IPAP/EPAP are flat
+presets, see Data format), the CSV must be exported with `-2`:
+
+    python resmart_parse.py -2 -o wave.csv -d 2026-07-21
+    python analyze_cpap.py -i wave.csv --wave resA       # also: resB, resC, pulse
+
+- `--wave <channel>` requires a CSV exported with `-2` (resA/resB/resC)
+  or `-1` (pulse); `--session N` still selects the night (default: most
+  recent), the output is `wave_<channel>_session_<id>_<date>.png`.
+
 - `-i/--input` is the CSV from step 3; `--session N` picks a session
   (default: the most recent one). Without `--session` the most recent
   night is used. An unknown id prints the available ids.
@@ -220,7 +230,8 @@ are guesses!):
 
 Address      Interpretatation
 000          Always 0xAAAA
-001          Reslex value (1-5)
+001          Usage day counter: increments ~1/day while the device is used
+             (320 -> 406 over this 91-day dump); not a setting
 002          IPAP value in units of 0.5 cm H20 (divide by 2 to get cm)
 003          EPAP value in units of 0.5 cm H20 (divide by 2 to get cm)
 004-028      25 values of something related to pressure at 25 Hz
@@ -238,6 +249,19 @@ Address      Interpretatation
 Some values are 0xffff (65535) when not valid, for example the
 respiration rate takes 30 or more seconds to become valid after the
 start of pressure flow.
+
+The word 001 field (stored in the CSV under the column `usage_day`) is not
+a Reslex softness setting as originally guessed: it is a counter that
+ticks up roughly once per day of use (observed 320 -> 406 across this
+dump's 91 days, with edge transitions at power-on and around midnight).
+Its exact semantics are not fully confirmed.
+
+IPAP and EPAP words are the machine's *configured* pressures, not measured
+instantaneous pressure. In fixed-single-pressure CPAP mode both are
+constant and identical: every packet of this dump reports raw 13
+(6.5 cmH2O). The values actually measured over each breath are the 25 Hz
+arrays above (words 4-53 are pressure-related, 54-78 flow), or their CSV
+forms `resA`/`resB`/`resC` (see the `-2`/`--wave` workflow in step 6).
 
 The last 8 bytes are the timestamp, one 16-bit integer for the year,
 followed by 5 unsigned bytes for month, day, hour, minute, and second.

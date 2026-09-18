@@ -42,7 +42,7 @@ class packet(object):
 
     # some data fields are known, label them
     known_fields = {
-        "Reslex": 1,
+        "usage_day": 1,
         "IPAP": 2,
         "EPAP": 3,
         "tidal_vol": 99,
@@ -54,7 +54,7 @@ class packet(object):
     # The raw words are NOT converted: the unit documents what the stored
     # value means (e.g. IPAP=13 means 6.5 cmH2O).
     known_units = {
-        "Reslex": "",
+        "usage_day": "",
         "IPAP": "0.5 cmH2O",
         "EPAP": "0.5 cmH2O",
         "tidal_vol": "L/min",

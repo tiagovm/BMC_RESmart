@@ -128,3 +128,62 @@ def plot_overlapped_sessions(df, num_sessions=10, include_epap=False):
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig, ax
+
+
+WAVE_CHANNELS = {"resA": "resA", "resB": "resB", "resC": "resC", "pulse": "pulse"}
+
+MAX_WAVE_POINTS = 200000
+
+
+def plot_waveform(session_df, channel="resA"):
+    """Plot a high-rate waveform channel of one sleep session.
+
+    The 25 Hz (resA/resB/resC) and 10 Hz (pulse) arrays are only present in
+    a CSV exported with ``-2``/``-1``: the parser writes one row per
+    sub-second sample with a millisecond timestamp, so the channel column is
+    already a dense time series (rows of the same second are in sample
+    order). ``session_df`` must hold exactly one session of such a frame.
+
+    The values are stored verbatim (raw device words; the scaling of these
+    channels is not known), so the y axis is labelled as raw units.
+
+    Very long sessions are downsampled to at most ``MAX_WAVE_POINTS`` to
+    keep plotting fast; the line is drawn from every k-th sample.
+
+    Returns the ``(figure, axes)`` pair; the caller decides whether to save
+    it or display it on screen.
+    """
+    if channel not in WAVE_CHANNELS:
+        raise ValueError("unknown channel {!r}; choose from {}".format(
+            channel, ", ".join(sorted(WAVE_CHANNELS))))
+    col = WAVE_CHANNELS[channel]
+    if col not in session_df.columns:
+        raise ValueError(
+            "column '{}' not found: re-export the CSV with -2 "
+            "(resA/resB/resC) or -1 (pulse) and run clean_and_preprocess".format(col)
+        )
+
+    ts = session_df["timestamp"]
+    if "session_id" in session_df.columns:
+        sid = int(session_df["session_id"].iloc[0])
+    else:
+        sid = 0
+    start = ts.iloc[0]
+    end = ts.iloc[-1]
+
+    n = len(session_df)
+    step = max(1, round(n / MAX_WAVE_POINTS))
+    x = ts.iloc[::step]
+    y = session_df[col].iloc[::step].astype(float)
+
+    fig, ax = plt.subplots(figsize=(14, 4))
+    ax.plot(x, y, color="tab:blue", linewidth=0.6)
+    ax.set_title("Waveform {} - session {} ({:%Y-%m-%d %H:%M} -> {:%H:%M})".format(
+        channel, sid, start, end))
+    ax.set_xlabel("Time")
+    ax.set_ylabel("{} (raw units)".format(channel))
+    if step > 1:
+        ax.set_title(ax.get_title() + " (downsampled {:d}x)".format(step))
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig, ax
