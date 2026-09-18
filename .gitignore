@@ -102,3 +102,6 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# Patient data dumps (medical data, sensitive, large)
+resources/

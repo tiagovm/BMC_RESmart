@@ -245,30 +245,39 @@ parser.add_argument('--dates', '-d',  nargs = '+',
                     help='select date range in YYYY-MM-DD format. Single date is one day, two dates are start and end of time range.',
                     default=[])
 
+# no arguments at all: show help and exit without reading or writing any files
+if len(sys.argv) == 1:
+    parser.print_help(sys.stderr)
+    parser.exit(2)
+
 args = parser.parse_args()
 
 
 
 start_date = None
 end_date = None
+if len(args.dates) > 2:
+    parser.error('-d requires 1 or 2 dates (YYYY-MM-DD), got {}'.format(len(args.dates)))
 if len(args.dates) > 0:
     try:
         start_date = datetime.datetime.strptime(args.dates[0], '%Y-%m-%d').date()
     except ValueError:
-        raise ValueError("Incorrect -d date format, should be YYYY-MM-DD")
-        exit()
+        parser.error("Incorrect -d date format '{}', should be YYYY-MM-DD".format(args.dates[0]))
 
 if len(args.dates) > 1:
     try:
         end_date = datetime.datetime.strptime(args.dates[1], '%Y-%m-%d').date()
     except ValueError:
-        raise ValueError("Incorrect -d date format, should be YYYY-MM-DD")
-        exit()
+        parser.error("Incorrect -d date format '{}', should be YYYY-MM-DD".format(args.dates[1]))
 
 
 # Should probably ensure these files all have the same root...
 filesNNN = glob.glob('*.[0-9][0-9][0-9]')
 filesNNN.sort()
+
+if not filesNNN:
+    print("No raw data files (*.nnn) found in current directory", file=sys.stderr)
+    sys.exit(1)
 
 packets = []
 thispacket = None
@@ -301,6 +310,7 @@ if not args.quiet:
 
 if args.info:
     print(get_day_info(packets))
+    sys.exit(0)
 
 
 if start_date is None:
