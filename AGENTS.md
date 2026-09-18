@@ -4,7 +4,7 @@ Python 3 tools that decode raw SD-card data dumps from a BMC RESmart GII CPAP ma
 
 ## Run / verify
 
-No build system, deps, tests, or linting. Standard library only (struct/glob/argparse/datetime). Verify changes by running against the sample dump:
+No build system, deps, tests, or linting. `resmart_parse.py` uses only the standard library (struct/glob/argparse/datetime); `preprocess.py` is the approved exception and requires pandas. Verify changes by running against the sample dump:
 
 ```
 python resmart_parse.py -i -q        # run while cwd = dir containing the data files

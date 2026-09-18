@@ -3,7 +3,8 @@
 Design documentation for the BMC RESmart GII parser.
 
 - Status: reverse-engineered, unofficial, NOT for medical use.
-- Targets: `resmart_parse.py` (parsing + CLI) and `graph_data.py` (incomplete GUI).
+- Targets: `resmart_parse.py` (parsing + CLI), `preprocess.py` (CSV cleanup, pandas),
+  and `graph_data.py` (incomplete GUI).
 - Requirements on the toolchain are minimal: Python 3, standard library only.
 
 ## 1. Requirements
@@ -140,8 +141,9 @@ of the dump.
 
 ## 5. Constraints
 
-- Standard library only (`struct`, `argparse`, `glob`, `datetime`); no third-party
-  dependencies; no build step, test framework, or CI.
+- `resmart_parse.py` uses the standard library only (`struct`, `argparse`, `glob`,
+  `datetime`); `preprocess.py` is the approved exception and requires pandas.
+  No build step, test framework, or CI.
 - Input files are discovered from the **current working directory**; there is no
   directory argument (`scripts` invoked by path, `cwd` = data directory).
 - Python 3 only.
@@ -164,6 +166,10 @@ of the dump.
 - `graph_data.py` is an unfinished placeholder GUI that plots random data; it
   does not read RESmart data yet.
 - High-rate modes (`-2`/`-1`) inflate output 25x/10x, producing large CSVs.
+- Raw CSV column names carry a leading space (rows are glued with `", "`);
+  `preprocess.py` strips them.
+- The sample dump contains no `65535` values, so the invalid-to-NaN path in
+  `preprocess.py` is latent (only exercised by synthetic data / SpO2-less dumps).
 - Event/apnea detection is not implemented (neither the device nor this code
   performs it; the BMC analysis software does).
 - No automated test suite; regressions are checked manually by hashing sample
@@ -171,8 +177,12 @@ of the dump.
 
 ## 7. Feature roadmap
 
-- `graph_data.py`: turn the placeholder into a real viewer that reads the CSV
-  (daily hour strip chart, IPAP/EPAP/flow traces, spO2 overlay).
+- [done] `preprocess.py`: `clean_and_preprocess` — pandas pipeline that parses
+  ISO timestamps, sorts chronologically (wrap repair), maps 65535 to NaN,
+  strips column names and resets the index. Consumers rely on the "Data
+  contract for downstream tools" section in `README.md`.
+- `graph_data.py`: turn the placeholder into a real viewer that reads the
+  cleaned CSV (daily hour strip chart, IPAP/EPAP/flow traces, spO2 overlay).
 - Optional unit conversion flag (e.g. report IPAP/EPAP in cmH2O instead of raw
   0.5-cmH2O words).
 - Optional global time sorting of the output to flatten the wrap-file ordering.

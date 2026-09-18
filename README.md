@@ -14,85 +14,114 @@ card. This data is also analyzed and interpreted by the RESmart nPAP
 Data Analysis Software also made by BMC. Since this is not freely
 available, I have created this software as an alternative.
 
-Thsi software extracts raw data for your own analysis, including time
+This software extracts raw data for your own analysis, including time
 and duration of use, IPAP, EPAP, and Reslex pressure settings,
 airflow, tidal volume, respiration rate, as well as SP02 and pulse
-rate if the auxillary pulse oximeter is used.
+rate if the auxiliary pulse oximeter is used.
 
 Note that the determination of apnea/hypopnea events seems to be done
 only in the BMC software and not on the device, so this is not
 currently supported by the software here.
 
-----
+## Workflow
 
-The RESmart GII systems record operational data on an SD card. To extract this data, copy the files using an SD card into your own computer and run the python program.
+End-to-end usage of the scripts in this repository.
 
-The files will be in the form:
+### 1. Get the data off the device
+
+Copy the SD-card contents into a folder on your computer. The raw
+data files are the ones with a three-digit numeric extension:
 
 ~~~~
-
-NNCNNNNN.evt
-NNCNNNNN.idx
-NNCNNNNN.usr
-NNCNNNNN.log
 NNCNNNNN.000
 NNCNNNNN.001
 .
 .
-.
+NNCNNNNN.nnn
 ~~~~
 
-The NNCNNNN file root is the device serial number, for example '16C01034'
+where `NNCNNNNN` is the device serial number (e.g. `16C01034`). The
+`.usr`, `.evt`, `.idx` and `.log` files are written by the BMC PC
+software and are not read by the parser.
 
-Raw data from the device is stored in the files with numerical
-extensions. It's my guess that this is analyzed by the BMC software
-and results are stored in the .usr and .evt files, but without
-confirmation this is conjecture.  User information such as name and
-address is stored in the .usr file, while the .log file seems to store
-interactions with the software.
+### 2. Inspect what the card contains (optional)
 
-The code here reads only the raw data files. Run in the same directory, it looks for raw data files of the form *.nnn where nnn is a three-digit integer. These are read in sequence.
+From inside the data folder, run the parser in read-only info mode (`-i`
+never writes a file):
 
-Each file consists of a sequence of 256-byte packets, Each packet
-corresponds to one second of data formatted as 120 two-byte unsigned
-integers followed by an 8-byte timestamp. The format of the integers
-is as follows (these are guesses!):
+    python resmart_parse.py -i -q
 
-~~~~
+It prints a day-by-day summary: hours with recorded data, whether pulse
+data is present, and session length.
 
-Address      Interpretatation
-000          Always 0xAAAA
-001          Reslex value (1-5)
-002          IPAP value in units of 0.5 cm H20 (divide by 2 to get cm)
-003          EPAP value in units of 0.5 cm H20 (divide by 2 to get cm)
-004-028      25 values of something related to pressure at 25 Hz
-029-053      25 values of of something related to pressure at 25 Hz
-054-078      25 values of instaneous flow at 25 Hz
-079-084      10 values of something oscillatory at 10Hz (motor drive?)
-085-094      unknown values related to pressure?
-095          Tidal volume in liters per minute
-098          spO2 (blood oxygenation) in percent (only if oximeter attached)
-099          Heart rate in bpm (only if oximeter attached)
-100          Respiration rate in breaths per minute
-101-120      zero padding
-~~~~
+> Note: there is no directory argument. The parser looks for `*.nnn`
+> files in the current working directory, so `cd` into the data folder
+> (e.g. `resources\2026-09-18\`) and give the script's full path:
+> `python ..\..\resmart_parse.py -i -q`.
 
-Some values are 0xffff (65535) when not valid, for
-example the respiration rate takes 30 or more seconds to become valid
-after the start of pressure flow.
+### 3. Export the data to CSV
 
-The last 8 bytes are the timestamp, one 16-bit integer for the year,
-followed by 5 unsigned bytes for month, day, hour, minute, and
-second. The final byte is an unknown value.
+Still inside the data folder, export to a CSV (the file appears
+immediately; reading is streaming, roughly 2 seconds per day):
 
-The CSV output always starts with a header row that names every
-column; where a unit is known it appears in the column name, e.g.
-`IPAP (0.5 cmH2O)`. The first column is `timestamp`, an ISO 8601
-timestamp (`2026-07-21T23:59:45`). `-y` replaces it with separate
-year/month/day/hour/minute/second columns and `-s` with an opaque
-seconds value. When `-2` or `-1` are used, each sub-second sample row
-carries its own ISO timestamp with milliseconds.
+    python resmart_parse.py -o out.csv                       # whole card
+    python resmart_parse.py -o out.csv -d 2026-07-21         # one day
+    python resmart_parse.py -o out.csv -d 2026-07-21 2026-07-31   # date range
+    python resmart_parse.py -a -o out.csv                    # every raw field
 
+- Without `-d` the whole card is exported (this dump: ~500 MB input,
+  ~92 MB / 1.97 M rows of CSV in ~14 s).
+- Row order follows the order of the files on the SD card, which is
+  **not** chronological: storage is circular, so the timeline can jump
+  back in time at the wrap-around file. The preprocessing step repairs
+  this.
+
+### 4. Clean and preprocess the CSV
+
+The analysis-ready step (`preprocess.py`, requires pandas):
+
+    python preprocess.py out.csv            # prints shape + data summary
+
+or, for use inside your own analysis code:
+
+    from preprocess import clean_and_preprocess
+    df = clean_and_preprocess("out.csv")
+
+It returns a DataFrame where the ISO timestamps are real datetimes,
+rows are sorted chronologically (wrap-around repaired), invalid sensor
+reads (65535 / 0xFFFF) are converted to NaN, column names are stripped,
+and the index is reset. See the module docstring for the exact steps.
+
+### 5. Analyze and visualize
+
+The cleaned DataFrame from step 4 is the common input for the analysis
+and visualization scripts (statistics per night, plots, etc.). Obey the
+data contract below when writing them. `graph_data.py` is an unfinished
+placeholder GUI and does not read RESmart data yet.
+
+## Data contract for downstream tools
+
+Any tool that consumes the parser's CSV or the preprocessed DataFrame
+should assume:
+
+- There is always a header row naming every column. Known fields carry
+  their unit in the column name (e.g. `IPAP (0.5 cmH2O)`).
+- The first column defaults to `name="timestamp"`, an ISO 8601
+  timestamp (`2026-07-21T23:59:45`). Sub-second modes (`-2`, `-1`)
+  give each row a millisecond timestamp. See the CLI reference for the
+  `-y` / `-s` alternatives, which do not produce a `timestamp` column.
+- Column names in the raw CSV may carry a leading space (the parser
+  glues fields with `", "`); preprocess strips them.
+- The raw parser output is ordered by file, not by time; timestamps can
+  go backwards at the circular-wrap boundary and the same second can
+  appear twice there. Sort on `timestamp` before analysis
+  (preprocess does this and keeps duplicates).
+- Value 65535 (0xFFFF) means "invalid measurement", e.g. respiration
+  rate for the first ~30 seconds after the start of airflow, or SpO2 /
+  heart rate when no oximeter is attached. Replace with NaN before
+  statistics or plotting (preprocess does this).
+
+## CLI reference
 
 ~~~~
 
@@ -127,3 +156,45 @@ Example:
     resmart_parse.py -o out.csv -d 2026-07-21
 ~~~~
 
+## Data format
+
+The raw data files (`*.nnn`) are read in sequence. Each file consists
+of a sequence of 256-byte packets; each packet corresponds to one
+second of data formatted as 106 two-byte unsigned integers followed by
+an 8-byte timestamp. The format of the integers is as follows (these
+are guesses!):
+
+~~~~
+
+Address      Interpretatation
+000          Always 0xAAAA
+001          Reslex value (1-5)
+002          IPAP value in units of 0.5 cm H20 (divide by 2 to get cm)
+003          EPAP value in units of 0.5 cm H20 (divide by 2 to get cm)
+004-028      25 values of something related to pressure at 25 Hz
+029-053      25 values of of something related to pressure at 25 Hz
+054-078      25 values of instaneous flow at 25 Hz
+079-084      10 values of something oscillatory at 10Hz (motor drive?)
+085-094      unknown values related to pressure?
+095          Tidal volume in liters per minute
+098          spO2 (blood oxygenation) in percent (only if oximeter attached)
+099          Heart rate in bpm (only if oximeter attached)
+100          Respiration rate in breaths per minute
+101-120      zero padding
+~~~~
+
+Some values are 0xffff (65535) when not valid, for example the
+respiration rate takes 30 or more seconds to become valid after the
+start of pressure flow.
+
+The last 8 bytes are the timestamp, one 16-bit integer for the year,
+followed by 5 unsigned bytes for month, day, hour, minute, and second.
+The final byte is an unknown value.
+
+The CSV output always starts with a header row that names every
+column; where a unit is known it appears in the column name, e.g.
+`IPAP (0.5 cmH2O)`. The first column is `timestamp`, an ISO 8601
+timestamp (`2026-07-21T23:59:45`). `-y` replaces it with separate
+year/month/day/hour/minute/second columns and `-s` with an opaque
+seconds value. When `-2` or `-1` are used, each sub-second sample row
+carries its own ISO timestamp with milliseconds.
