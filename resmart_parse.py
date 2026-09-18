@@ -41,11 +41,11 @@ class packet(object):
         
         # first 85 fields are 25 Hz and 10 Hz measurements of pressure/flow
         for i in range(25):
-            self.data_fields[4 + i   ] = "resA".format(i)
-            self.data_fields[4 + i + 25] = "resB".format(i)
-            self.data_fields[4 + i + 50] = "resC".format(i)
+            self.data_fields[4 + i          ] = "resA_{:d}".format(i)
+            self.data_fields[4 + i + 25     ] = "resB_{:d}".format(i)
+            self.data_fields[4 + i + 50     ] = "resC_{:d}".format(i)
             if i < 10:
-                self.data_fields[4 + i + 75] = "pulse".format(i)
+                self.data_fields[4 + i + 75 ] = "pulse_{:d}".format(i)
                 
         # some data fields are known, label them
         self.known_fields = {
@@ -57,6 +57,16 @@ class packet(object):
             "HR_BPM":103,
             "rep_rate":104}
         
+        # units of the raw stored values, shown in the CSV header row
+        self.known_units = {
+            "Reslex": "",
+            "IPAP": "0.5 cmH2O",
+            "EPAP": "0.5 cmH2O",
+            "tidal_vol": "L/min",
+            "spO2_pct": "%",
+            "HR_BPM": "bpm",
+            "rep_rate": "breaths/min"}
+
         for key, val in self.known_fields.items():
             self.data_fields[val] = key
     
@@ -85,13 +95,6 @@ class packet(object):
             val = struct.unpack("H",pbuf[ptr:ptr+2])
             self.data.append(val[0])
 
-    def get_known_header_csv(self):
-        # text descriptions of known values
-        outstr = ""
-        for key, val in self.known_fields.items():
-            outstr += "{}, ".format(key)
-        return outstr
-
     def get_known_values_csv(self):
         # print only understood values
         outstr = ""
@@ -102,19 +105,8 @@ class packet(object):
     def get_all_values_csv(self):
         # print all data values whether we know what they are or not
         outstr = ""
-        for i in range(1,3):
+        for i in range(self.dlen):
             outstr += "{}, ".format(self.data[i])
-        for i in range(89,self.dlen):
-            outstr += "{}, ".format(self.data[i])
-        return outstr
-
-    def get_all_values_header_csv(self):
-        # print all data values whether we know what they are or not
-        outstr = ""
-        for i in range(1,3):
-            outstr += "{}, ".format(self.data_fields[i])
-        for i in range(89,self.dlen):
-            outstr += "{}, ".format(self.data_fields[i])
         return outstr
 
     def fix_csv(self, csv_str):
@@ -123,10 +115,6 @@ class packet(object):
         if csv_str[-1] == ',':
             csv_str = csv_str[0:-1]
         return csv_str 
-
-    def get_time_ymd_header_csv(self):
-        # return time string in year, month, day format
-        return ",".join(self.timestamp_fields)
 
     def get_time_ymd_csv(self):
         # return time string in year, month, day format
@@ -138,6 +126,17 @@ class packet(object):
             
     def get_time_seconds(self):
         return self.second + 60*self.minute + 3600*(self.hour + 24*(self.ordinal))
+
+    def get_timestamp_iso(self, subsec=None):
+        """ISO 8601 timestamp for this packet, optionally shifted by subsec
+        fractional seconds (used for 10/25 Hz subsamples)"""
+        ts = datetime.datetime(self.year, self.month, self.day,
+                               self.hour, self.minute, self.second)
+        if subsec is not None:
+            ts += datetime.timedelta(seconds=subsec)
+            return ts.isoformat(sep='T', timespec='milliseconds')
+        return ts.isoformat(sep='T', timespec='seconds')
+
     def get_10hz_csv(self, i):
         return "{}, ".format(self.data[4 + 75 + i])
 
@@ -199,6 +198,45 @@ def get_day_info(packets):
                 " {}\n".format(s2HMS(daysecs)))
     return infostr
 
+def make_header(pkt, args):
+    """ csv header row matching the column layout of the current output mode """
+    def named(name):
+        unit = pkt.known_units.get(name, "")
+        return name + (" ({})".format(unit) if unit else "")
+
+    cols = []
+    # time columns
+    if args.time_ymd:
+        cols += pkt.timestamp_fields
+    elif args.time_seconds:
+        cols += ["time_seconds"]
+    else:
+        cols += ["timestamp"]
+
+    # data columns
+    if args.all_data:
+        for i in range(pkt.dlen):
+            label = pkt.data_fields[i]
+            if label == "?":
+                cols.append("word_{:03d}".format(i))
+            else:
+                cols.append(named(label))
+    else:
+        for name in pkt.known_fields:
+            cols.append(named(name))
+
+    # sub-second sample columns
+    if args.f10_hz:
+        if args.time_ymd or args.time_seconds:
+            cols.append("time_frac")
+        cols.append("pulse")
+    elif args.f25_hz:
+        if args.time_ymd or args.time_seconds:
+            cols.append("time_frac")
+        cols += ["resA", "resB", "resC"]
+
+    return ", ".join(cols)
+
 ######################## main program starts here
 
 if sys.version_info.major < 3:
@@ -237,9 +275,9 @@ parser.add_argument('--quiet','-q',
                     action='store_true',
                     help='Do not print progress and info to stderr')
 
-parser.add_argument('output_file', nargs = '?', 
-                    help='Output data CSV file, careful will overwrite existing data.',
-                    default="RESmart_data.csv")
+parser.add_argument('--output','-o',
+                    help='Output data CSV file (default: %(default)s); it overwrites existing data.',
+                    default='RESmart_data.csv')
 
 parser.add_argument('--dates', '-d',  nargs = '+', 
                     help='select date range in YYYY-MM-DD format. Single date is one day, two dates are start and end of time range.',
@@ -328,9 +366,9 @@ if end_date is None:
 #print(start_date)
 #print(end_date)
 
-with open(args.output_file, 'w') as outf:
-    # read data 
-    
+with open(args.output, 'w') as outf:
+    outf.write(make_header(packets[0], args) + "\n")
+
     day = -1
     for i, p in enumerate(packets):
 
@@ -340,35 +378,47 @@ with open(args.output_file, 'w') as outf:
             if p.ordinal != day and not args.quiet:
                 day = p.ordinal
                 print("Writing {} data to {}".format(p.datestr,
-                                                     args.output_file))
-
-            outstr = ""
-            if args.time_seconds:
-                outstr += "{}, ".format(p.get_time_seconds())
-
-            if args.time_ymd:
-                outstr += p.get_time_ymd_csv()
+                                                     args.output))
 
             if args.all_data:
-                outstr += p.get_all_values_csv() 
-            else: 
-                outstr += p.get_known_values_csv()
-
-            if args.f10_hz:
-                for i in range(10):
-                    frac_sec = float(p.get_time_seconds()) + float(i)/10.
-                    tstr = "{:.2f}, ".format(frac_sec)
-                    tstr += p.get_10hz_csv(i)
-                    outf.write(p.fix_csv(outstr + tstr) + "\n")      
-
-            elif args.f25_hz:
-                for i in range(25):
-                    frac_sec = float(p.get_time_seconds()) + float(i)/25.
-                    tstr = "{:.2f}, ".format(frac_sec)
-                    tstr += p.get_25hz_csv(i)
-                    outf.write(p.fix_csv(outstr + tstr) + "\n")      
+                data = p.get_all_values_csv()
             else:
-                outf.write(p.fix_csv(outstr) + "\n")            
+                data = p.get_known_values_csv()
+
+            if args.time_seconds or args.time_ymd:
+                # numeric time column(s) repeated on every sub-second row
+                if args.time_seconds:
+                    tbase = "{}, ".format(p.get_time_seconds())
+                else:
+                    tbase = p.get_time_ymd_csv()
+                if args.f10_hz:
+                    for j in range(10):
+                        tstr = tbase + data
+                        tstr += "{:.2f}, ".format(float(p.get_time_seconds()) + float(j)/10.)
+                        tstr += p.get_10hz_csv(j)
+                        outf.write(p.fix_csv(tstr) + "\n")
+                elif args.f25_hz:
+                    for j in range(25):
+                        tstr = tbase + data
+                        tstr += "{:.2f}, ".format(float(p.get_time_seconds()) + float(j)/25.)
+                        tstr += p.get_25hz_csv(j)
+                        outf.write(p.fix_csv(tstr) + "\n")
+                else:
+                    outf.write(p.fix_csv(tbase + data) + "\n")
+            else:
+                # single ISO timestamp column, sub-second precision for high-freq rows
+                if args.f10_hz:
+                    for j in range(10):
+                        tstr = p.get_timestamp_iso(float(j)/10.) + ", "
+                        tstr += data + p.get_10hz_csv(j)
+                        outf.write(p.fix_csv(tstr) + "\n")
+                elif args.f25_hz:
+                    for j in range(25):
+                        tstr = p.get_timestamp_iso(float(j)/25.) + ", "
+                        tstr += data + p.get_25hz_csv(j)
+                        outf.write(p.fix_csv(tstr) + "\n")
+                else:
+                    outf.write(p.fix_csv(p.get_timestamp_iso() + ", " + data) + "\n")            
 
 
 

@@ -85,38 +85,45 @@ The last 8 bytes are the timestamp, one 16-bit integer for the year,
 followed by 5 unsigned bytes for month, day, hour, minute, and
 second. The final byte is an unknown value.
 
+The CSV output always starts with a header row that names every
+column; where a unit is known it appears in the column name, e.g.
+`IPAP (0.5 cmH2O)`. The first column is `timestamp`, an ISO 8601
+timestamp (`2026-07-21T23:59:45`). `-y` replaces it with separate
+year/month/day/hour/minute/second columns and `-s` with an opaque
+seconds value. When `-2` or `-1` are used, each sub-second sample row
+carries its own ISO timestamp with milliseconds.
+
 
 ~~~~
 
 usage: resmart_parse.py [-h] [--info] [--f25_hz] [--f10_hz] [--all_data]
                         [--time_ymd] [--time_seconds] [--quiet]
                         [--dates DATES [DATES ...]]
-                        [output_file]
+                        [-o OUTPUT]
 [in a directory containing .000, .001... raw data files ]
-
-positional arguments:
-  output_file           Output data CSV file, careful will overwrite existing
-                        data.
 
 options:
   -h, --help            show this help message and exit
+  -o, --output          Output data CSV file (default: RESmart_data.csv);
+                        it overwrites existing data
   --info, -i            Prints readable summary of data and dates to stdout
   --f25_hz, -2          Print out all 25 Hz (flow) data. this will make output
                         files 25x as big.
   --f10_hz, -1          Print out all 10 Hz (pulse) data. this will make output
                         files 10x as big.
   --all_data, -a        Print out all 1Hz data fields known or unknown
-  --time_ymd, -y        Print timestamp in Y, M, D, H, M, S format
+  --time_ymd, -y        Print timestamp in Y, M, D, H, M, S format (separate
+                        columns)
   --time_seconds, -s    Print timestamp in seconds since beginning of year
   --quiet, -q           Do not print progress and info to stderr
   --dates, -d DATES...  select date range in YYYY-MM-DD format. Single date is
                         one day, two dates are start and end of time range.
 
 Running with no arguments prints this help and exits without writing any
-files. The output file is written only when one of the above flags is given;
---info prints a summary only and never writes the CSV. Because -d takes a
-list of values, put the output filename before -d:
+files. --info prints a summary only and never writes the CSV.
 
-    resmart_parse.py out.csv -d 2026-07-21
+Example:
+
+    resmart_parse.py -o out.csv -d 2026-07-21
 ~~~~
 

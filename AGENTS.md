@@ -11,8 +11,8 @@ python resmart_parse.py -i -q        # run while cwd = dir containing the data f
 ```
 
 - `resmart_parse.py` discovers input via cwd glob `*.nnn` (`*.[0-9][0-9][0-9]`); there is **no directory argument**. To test, run from `resources\<date>\` (full path to the script) or copy a couple of `.nnn` files to a temp dir.
-- Running with no arguments prints the CLI help to stderr and exits (code 2) — it reads or writes nothing. `RESmart_data.csv` (the default output file) is written only when output flags are passed; `--info` is read-only and never writes the CSV.
-- Because `-d` uses `nargs='+'`, it greedily swallows a trailing output filename (`resmart_parse.py -d 2026-07-21 out.csv` misreads `out.csv` as a date). Put the output file before `-d`: `resmart_parse.py out.csv -d 2026-07-21`.
+- Running with no arguments prints the CLI help to stderr and exits (code 2) — it reads or writes nothing. `RESmart_data.csv` (the default `-o` output file) is written only when output flags are passed; `--info` is read-only and never writes the CSV.
+- The CSV always has a header row naming every column; the first column is an ISO 8601 `timestamp` (`2026-07-21T23:59:45`). Known fields carry their unit in the header (e.g. `IPAP (0.5 cmH2O)`), driven by `packet.known_units`.
 - Requires Python 3 (hard-exits otherwise at module top, before arg parsing).
 
 ## Language / git
