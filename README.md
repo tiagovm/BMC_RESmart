@@ -117,8 +117,26 @@ and raises an error otherwise. See `DESIGN.md` for the algorithm.
 The cleaned, session-tagged DataFrame from steps 4-5 is the common input
 for the analysis and visualization scripts (statistics per session,
 plots, etc.). Obey the data contract below when writing them.
-`graph_data.py` is an unfinished placeholder GUI and does not read
-RESmart data yet.
+
+The plotting pipeline steps 1-5 are chained into a single CLI
+(`analyze_cpap.py`):
+
+    python analyze_cpap.py -i out.csv --session 3        # night 3 -> PNG
+    python analyze_cpap.py -i out.csv --show             # most recent night, on screen
+    python analyze_cpap.py -i out.csv -o night.png --limit-hours 6
+
+- `-i/--input` is the CSV from step 3; `--session N` picks a session
+  (default: the most recent one). Without `--session` the most recent
+  night is used. An unknown id prints the available ids.
+- The plot shows the night's IPAP/EPAP pressure curves in cmH2O (the raw
+  device values are stored in 0.5 cmH2O steps and divided by 2), saved as
+  `pressure_session_<id>_<date>.png` next to the input unless `-o` is given;
+  `--show` displays it on screen instead.
+- Programmatic use: `plot_pressure_curve(session_df)` from `plotting.py`
+  returns the Matplotlib figure/axes for a single-session DataFrame.
+
+`graph_data.py` is an unfinished placeholder GUI and does not read RESmart
+data yet.
 
 ## Data contract for downstream tools
 

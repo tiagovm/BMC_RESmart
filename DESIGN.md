@@ -4,9 +4,12 @@ Design documentation for the BMC RESmart GII parser.
 
 - Status: reverse-engineered, unofficial, NOT for medical use.
 - Targets: `resmart_parse.py` (parsing + CLI), `preprocess.py` (CSV cleanup, pandas),
-  `analysis.py` (pandas helpers such as session segmentation), and
-  `graph_data.py` (incomplete GUI).
-- Requirements on the toolchain are minimal: Python 3, standard library only.
+  `analysis.py` (pandas helpers such as session segmentation),
+  `plotting.py` + `analyze_cpap.py` (matplotlib plots and the chained CLI),
+  and `graph_data.py` (incomplete GUI).
+- Requirements on the toolchain: Python 3, standard library for
+  `resmart_parse.py`; pandas is the approved exception for
+  `preprocess.py`/`analysis.py`, matplotlib for `plotting.py`/`analyze_cpap.py`.
 
 ## 1. Requirements
 
@@ -143,6 +146,28 @@ degenerates to one session per row (allowed, useless). The function raises a
 `ValueError` if the frame is not already sorted ascending, enforcing the
 pipeline order.
 
+### Tertiary processing: plotting (`plotting.py` + `analyze_cpap.py`)
+
+`analyze_cpap.py` chains the whole workflow into one command:
+
+```
+read_csv → clean_and_preprocess → segment_sessions
+        → filter to one session_id → plot_pressure_curve → save/display
+```
+
+- CLI: `-i/--input` (required), `--session N` (default: most recent),
+  `-o/--output` PNG (default: `pressure_session_<id>_<date>.png` next to the
+  input), `--show` (interactive backend), `--limit-hours` (passthrough).
+  The pyplot backend is chosen before importing `plotting.py`: Agg for file
+  output, the default interactive one for `--show`.
+- `plot_pressure_curve(session_df)` converts the raw pressures to cmH2O by
+  dividing by 2 — the device stores IPAP/EPAP in 0.5 cmH2O steps, so a raw
+  `20` means `10.0 cmH2O` — into `IPAP_cmH2O`/`EPAP_cmH2O` columns, then plots
+  both against time with axes labels, legend, grid and a session-aware
+  title. Invalid reads that preprocess converted to NaN simply leave gaps.
+  It returns the Matplotlib `(figure, axes)` so the caller decides how to
+  save or show it.
+
 ## 4. Key design decisions
 
 - **Streaming over accumulate-then-write.** The original implementation parsed
@@ -213,9 +238,12 @@ pipeline order.
   contract for downstream tools" section in `README.md`.
 - [done] `analysis.py`: `segment_sessions` — assigns each row a 1-based
   `session_id` for its night of use from the gap between consecutive rows
-  (see "Secondary processing" in the architecture section). Next step: per
-  session-aggregated statistics (duration, AHI-style indices, pressure/wave
-  profiles) consuming this column in `analysis.py`.
+  (see "Secondary processing" in the architecture section).
+- [done] `plotting.py` + `analyze_cpap.py` — `plot_pressure_curve` derives
+  `IPAP_cmH2O`/`EPAP_cmH2O` (raw / 2) and plots a session's pressure curves;
+  the CLI chains clean → segment → filter → plot → save (or `--show`).
+  Next step: per session-aggregated statistics (duration, AHI-style indices,
+  pressure/wave profiles) in `analysis.py`, then richer plots.
 - `graph_data.py`: turn the placeholder into a real viewer that reads the
   cleaned CSV (daily hour strip chart, IPAP/EPAP/flow traces, spO2 overlay).
 - Optional unit conversion flag (e.g. report IPAP/EPAP in cmH2O instead of raw
