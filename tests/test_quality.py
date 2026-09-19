@@ -18,6 +18,8 @@ from quality import (
     SessionData,
     detect_signal_quality,
     load_session,
+    main,
+    read_quality_report,
     reconcile_units,
     resample_signal,
     segment_night,
@@ -319,3 +321,53 @@ def test_report_json_round_trip(tmp_path):
     assert "counts_by_kind" in data and "intervals" in data
     for iv in data["intervals"]:
         assert set(iv) == {"start", "end", "kind"}
+
+
+def test_read_quality_report_round_trip(tmp_path):
+    n = 400
+    ts = pd.date_range("2026-09-17 22:00:00", periods=n, freq="40ms")
+    values = np.asarray(pseudo_random_signal(n, 0.04))
+    values[100:200] = 5.0  # guaranteed suspect interval
+    df = pd.DataFrame({"timestamp": ts, "resA": values})
+    report = detect_signal_quality(df, session_id=9, channel="resA")
+    path = write_quality_report(report, str(tmp_path / "qc.json"))
+    loaded = read_quality_report(path)
+    assert loaded.session_id == report.session_id
+    assert loaded.channel == report.channel
+    assert loaded.sample_rate_hz == pytest.approx(report.sample_rate_hz)
+    assert loaded.valid_pct == pytest.approx(report.valid_pct)
+    assert loaded.counts_by_kind == report.counts_by_kind
+    assert loaded.warnings == report.warnings
+    assert loaded.params == report.params
+    assert len(loaded.intervals) == len(report.intervals)
+    assert loaded.intervals
+    for a, b in zip(loaded.intervals, report.intervals):
+        assert a.kind == b.kind
+        assert isinstance(a.start, pd.Timestamp) and isinstance(a.end, pd.Timestamp)
+        assert a.start == b.start and a.end == b.end
+
+
+def test_read_quality_report_missing_field_raises_value_error(tmp_path):
+    p = tmp_path / "bad.json"
+    p.write_text(json.dumps({"channel": "resA"}), encoding="utf-8")
+    with pytest.raises(ValueError) as e:
+        read_quality_report(str(p))
+    assert "session_id" in str(e.value)
+
+
+def test_preprocess_cli_writes_default_report(tmp_path):
+    csv = tmp_path / "seg.csv"
+    _write_segmented_csv(csv, session_id=1, n=50, period_s=0.04)
+    report_dir = tmp_path / "reports"
+    rc = main(["preprocess", "1", "--input", str(csv),
+               "--report-dir", str(report_dir)])
+    assert rc == 0
+    default = report_dir / "qc_session_1_2026-09-17.json"
+    assert default.exists()
+    assert read_quality_report(str(default)).session_id == 1
+    explicit = tmp_path / "explicit.json"
+    rc = main(["preprocess", "1", "--input", str(csv),
+               "--report", str(explicit)])
+    assert rc == 0
+    assert explicit.exists()
+    assert read_quality_report(str(explicit)).session_id == 1

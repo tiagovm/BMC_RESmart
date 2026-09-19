@@ -231,3 +231,103 @@ def test_cli_trend_missing_report_returns_2(tmp_path):
     rc = stats.main(["trend", "--input", str(csv),
                      "--report-dir", str(tmp_path / "empty")])
     assert rc == 2
+
+
+def test_valid_mask_union_and_inclusive_boundaries():
+    ts = pd.date_range("2026-09-17 22:30:00", periods=10, freq="1s")
+    report = _clean_report(session_id=1, n=10)
+    report.intervals = [
+        SuspiciousInterval(ts[2], ts[3], "flatline"),
+        SuspiciousInterval(ts[5], ts[5], "spike"),
+        SuspiciousInterval(ts[9], ts[9], "spike"),
+    ]
+    mask = stats.valid_mask(ts, report)
+    assert list(mask) == [
+        True, True, False, False, True,
+        False, True, True, True, False]
+
+
+def test_volume_distribution_no_breaths():
+    period = 0.04
+    ts = _timestamps(n=2000, period_s=period)
+    session = _make_session(ts, np.full(2000, 7.0), session_id=1)
+    warnings = []
+    dist = stats.volume_distribution(session, _clean_report(1),
+                                     warnings=warnings)
+    assert dist.n_breaths == 0
+    assert dist.bin_edges == [] and dist.counts == []
+    assert dist.global_mode is None and dist.bimodal is None
+    assert any("no breath cycles" in w for w in warnings)
+
+
+def test_session_summary_no_valid_samples():
+    period = 0.04
+    n = 7500
+    ts = _timestamps(n=n, period_s=period)
+    session = _make_session(ts, _breathing(n, period, 15.0), session_id=1)
+    report = _clean_report(n=n, valid_pct=0.0)
+    report.intervals = [SuspiciousInterval(ts[0], ts[-1], "flatline")]
+    summary = stats.session_summary(session, report)
+    assert summary.n_total == n and summary.n_valid == 0
+    assert summary.flow_median is None and summary.flow_iqr is None
+    assert summary.n_breaths == 0 and summary.tidal_mode is None
+    assert summary.rr_mean is None and summary.n_blocks_valid == 0
+    assert summary.usage_duration_s == pytest.approx(0.0)
+    assert summary.night_usage_pct == pytest.approx(0.0)
+    assert any("no QC-valid samples" in w for w in summary.warnings)
+
+
+def test_respiratory_rate_block_gated_by_valid_fraction():
+    period = 0.04
+    n = 15000  # 600 s -> two 5-minute blocks
+    ts = _timestamps(n=n, period_s=period)
+    session = _make_session(ts, _breathing(n, period, 15.0), session_id=1)
+    report = _clean_report(n=n, valid_pct=100.0 * 10500 / 15000)
+    report.intervals = [SuspiciousInterval(ts[3000], ts[7499], "flatline")]
+    rr = stats.respiratory_rate(session, report, block_minutes=5.0)
+    assert len(rr) == 2
+    assert not rr.iloc[0]["valid"]
+    assert np.isnan(rr.iloc[0]["rr_bpm"])
+    assert rr.iloc[0]["valid_frac"] == pytest.approx(0.4)
+    assert bool(rr.iloc[1]["valid"])
+    assert rr.iloc[1]["rr_bpm"] == pytest.approx(15.0, abs=1.0)
+
+
+def test_per_breath_volumes_peak_floor_filters_jitter():
+    # 50 triangular breath lobes (peak 2.0, ~1 s wide) plus a 0.5 s flat cap
+    # of height 0.2 in the middle of every gap: the peak floor must tally only
+    # the real breaths, while a zero floor also admits the jitter lobes.
+    period_s = 0.04
+    base = 5.0
+    n_pulses = 50
+    gap = int(6.0 / period_s)      # one breath per 6 s -> 50 in 300 s
+    rise = int(0.4 / period_s)
+    fall = int(0.6 / period_s)
+    jw = int(0.5 / period_s)
+    n = n_pulses * gap
+    values = np.full(n, base)
+    for k in range(n_pulses):
+        i0 = k * gap
+        values[i0:i0 + rise] = base + 2.0 * np.linspace(0, 1, rise)
+        values[i0 + rise:i0 + rise + fall] = \
+            base + 2.0 * np.linspace(1, 0, fall)
+        j = i0 + gap // 2
+        values[j:j + jw] = base + 0.2
+    valid = np.ones(n, dtype=bool)
+    with_floor = stats._per_breath_volumes(
+        values, valid, period_s, min_peak_units=1.0)
+    no_floor = stats._per_breath_volumes(
+        values, valid, period_s, min_peak_units=0.0)
+    assert len(with_floor) == n_pulses
+    assert len(no_floor) == n_pulses * 2  # breaths + one jitter cap each
+    assert np.allclose(with_floor, 1.0, atol=0.1)  # triangular area
+
+
+def test_cli_stats_corrupt_report_returns_2(tmp_path):
+    csv = tmp_path / "seg.csv"
+    _write_segmented_csv(csv, session_id=1)
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"channel": "resA"}), encoding="utf-8")
+    rc = stats.main(["stats", "1", "--input", str(csv),
+                     "--report-path", str(bad)])
+    assert rc == 2

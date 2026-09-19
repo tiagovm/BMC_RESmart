@@ -709,6 +709,12 @@ def read_quality_report(path):
     """
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
+    missing = [f for f in ("session_id", "channel", "sample_rate_hz")
+               if f not in data]
+    if missing:
+        raise ValueError(
+            "QualityReport {} is missing required field(s): {}".format(
+                path, ", ".join(missing)))
     return QualityReport(
         session_id=int(data["session_id"]),
         channel=str(data["channel"]),

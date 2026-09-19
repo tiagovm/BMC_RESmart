@@ -297,11 +297,13 @@ on real data exposed wrong initial designs (see "Key design decisions"):
   [--target-hz N] [--spike-rel-factor F] [--clip-lo L] [--clip-hi H]
   [--limit-hours H]`. The `--report`/`--plot` steps read and merge the
   already-computed report; `--show` needs an interactive backend.
-- Test suite: `tests/test_quality.py` (22 tests, run with `pytest` from the
+- Test suite: `tests/test_quality.py` (25 tests, run with `pytest` from the
   repository root). Synthetic fixtures inject a known flatline, clipped
   stretch, impulse spikes, a baseline step and a fast legit ramp, and cover
   the input auto-detection, unit reconciliation, resample edge cases, JSON
-  round-trip and night-segmentation boundaries.
+  round-trip (write + `read_quality_report`, required-field validation), the
+  preprocess CLI's default/`--report` writing, and night-segmentation
+  boundaries.
 
 ### Layer 2: descriptive statistics per session (`stats.py`)
 
@@ -359,12 +361,14 @@ SessionData (load_session) + QualityReport (read_quality_report)
   [--report-dir reports]`. Both consume reports named
   `reports/qc_session_<id>_<date>.json` (the Layer-1 default) via
   `read_quality_report`.
-- Test suite: `tests/test_stats.py` (12 tests, `pytest` from the repository
-  root). Synthetic breathing-like (sine) fixtures verify usage gating by QC
-  intervals, the raw-units warning contract, modal volume ≈ the analytical
-  sine-lobe integral, unimodal-vs-bimodal separation, RR recovery at a known
-  15 bpm, invalid flat blocks, trend aggregation, and both CLIs' JSON/CSV
-  outputs and fail-fast report handling.
+- Test suite: `tests/test_stats.py` (18 tests, `pytest` from the repository
+  root). Synthetic breathing-like (sine) fixtures verify the `valid_mask`
+  union/complement semantics, usage gating by QC intervals, the raw-units
+  warning contract, modal volume ≈ the analytical sine-lobe integral,
+  unimodal-vs-bimodal separation, RR recovery at a known 15 bpm, invalid
+  flat blocks, the per-block ≥50%-valid gate, the breath peak-floor against
+  jitter lobes, no-breaths/no-valid-sample edge cases, trend aggregation, and
+  both CLIs' JSON/CSV outputs and fail-fast report handling.
 
 ## 4. Key design decisions
 

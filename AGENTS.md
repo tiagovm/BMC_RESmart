@@ -12,7 +12,7 @@ Run the tests with:
 python -m pytest -q
 ```
 
-(22 tests in `tests/test_quality.py` + 12 in `tests/test_stats.py`; synthetic fixtures only — nothing real touched.) Verify parser changes by running against the sample dump:
+(25 tests in `tests/test_quality.py` + 18 in `tests/test_stats.py`; synthetic fixtures only — nothing real touched.) Verify parser changes by running against the sample dump:
 
 ```
 python resmart_parse.py -i -q        # run while cwd = dir containing the data files
