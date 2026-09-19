@@ -105,3 +105,6 @@ venv.bak/
 
 # Patient data dumps (medical data, sensitive, large)
 resources/
+
+# Derived patient analysis artifacts (QC reports, statistics, trend)
+reports/

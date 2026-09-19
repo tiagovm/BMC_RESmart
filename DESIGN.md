@@ -7,6 +7,7 @@ Design documentation for the BMC RESmart GII parser.
   `analysis.py` (pandas helpers such as session segmentation),
   `plotting.py` + `analyze_cpap.py` (matplotlib plots and the chained CLI),
   `quality.py` (Layer 1: ingest, preprocess, signal-quality control, CLI + pytest suite),
+  `stats.py` (Layer 2: descriptive per-session statistics + nightly trend, CLI + pytest suite),
   and `graph_data.py` (incomplete GUI).
 - Requirements on the toolchain: Python 3, standard library for
   `resmart_parse.py`; pandas/numpy for `preprocess.py`/`analysis.py`/
@@ -302,6 +303,69 @@ on real data exposed wrong initial designs (see "Key design decisions"):
   the input auto-detection, unit reconciliation, resample edge cases, JSON
   round-trip and night-segmentation boundaries.
 
+### Layer 2: descriptive statistics per session (`stats.py`)
+
+Layer 2 sits between Layer 1 and the future event/anomaly layers: it turns
+one session's signal and its persisted `QualityReport` into descriptive
+statistics and a one-row-per-night trend. It never reloads or re-checks the
+signal — it *consumes* the Layer-1 artifacts:
+
+```
+SessionData (load_session) + QualityReport (read_quality_report)
+        -> _analysis_frame (same resample identity grid as preprocess)
+        -> valid_mask (union of report.intervals over the grid)
+        -> session_summary  (usage, flow shape, tidal, RR summary)
+        -> volume_distribution (histogram, modes, Hartigan BC)
+        -> respiratory_rate (per-block autocorrelation estimates)
+        -> nightly_trend_summary -> reports/nightly_trend.csv
+```
+
+- The per-sample valid mask is reconstructed deterministically from the
+  report's `intervals` (the complement of their union on the resampled grid,
+  exactly how `detect_signal_quality` derived `valid_samples`); every metric
+  is computed on the valid samples only and reports the coverage it was
+  computed over.
+- **Usage** = `n_valid × measured period` vs. the session's total duration;
+  unrealistic usage drives the later adherence/anomaly layers.
+- **Tidal volume** is the integral of each inspiratory phase = a *positive
+  excursion above a slow rolling-median baseline* (`BASELINE_S`, ~45 s — many
+  breath cycles) whose height reaches `MIN_PEAK_FACTOR` (12) × the signal's
+  noise scale (median positive sample-to-sample step). Both constants were
+  calibrated on the real night: a 5 s baseline tracked the breath waveform
+  itself, chopping breaths into ~9.5k micro-lobes and a modal volume of 1.6;
+  the long baseline + peak floor recovers ~6.9k breaths vs. the ~6.7k the
+  autocorrelation RR (16.3 bpm) implies, with a sane mode ≈ 21. Values stay
+  in raw units (`resA` scaling unconfirmed) and are never converted to
+  liters.
+- **Volume distribution** uses Freedman–Diaconis bins floored at the √n
+  rule (FD alone collapses bimodal spreads to a few bins, hiding the modes);
+  reports skew, kurtosis and Hartigan's bimodality coefficient
+  `BC = (s²+1)/(k + 3(n-1)²/((n-2)(n-3)))`. `bimodal = True` only when
+  `BC > 5/9` *and* a valley-separated secondary mode exists (BC alone
+  false-positives on narrow clusters and flat-topped humps).
+- **Respiratory rate** is estimated per 5-min block from the FFT
+  autocorrelation of the detrended flow (first lag peak in 2-10 s → 6-30
+  bpm); a block is valid only when ≥ 50 % of its samples are QC-valid and a
+  strong (> 0.2) periodic peak exists. This is a flow-derived estimate, not
+  a clinical rate — AHI/events are explicitly out of scope (BMC software
+  only, see README).
+- `nightly_trend_summary` raises a descriptive error naming the sessions
+  missing a `QualityReport` rather than silently re-running QC; the CLI
+  fails with exit code 2.
+- CLI: `python stats.py stats <session_id> --input <csv> [--json out.json]
+  [--plot] [-o out.png] [--show] [--channel resA] [--report-path p]
+  [--report-dir reports] [--block-minutes 5]` and `python stats.py trend
+  --input <csv> [--all] [--output reports/nightly_trend.csv]
+  [--report-dir reports]`. Both consume reports named
+  `reports/qc_session_<id>_<date>.json` (the Layer-1 default) via
+  `read_quality_report`.
+- Test suite: `tests/test_stats.py` (12 tests, `pytest` from the repository
+  root). Synthetic breathing-like (sine) fixtures verify usage gating by QC
+  intervals, the raw-units warning contract, modal volume ≈ the analytical
+  sine-lobe integral, unimodal-vs-bimodal separation, RR recovery at a known
+  15 bpm, invalid flat blocks, trend aggregation, and both CLIs' JSON/CSV
+  outputs and fail-fast report handling.
+
 ## 4. Key design decisions
 
 - **Streaming over accumulate-then-write.** The original implementation parsed
@@ -335,6 +399,18 @@ on real data exposed wrong initial designs (see "Key design decisions"):
   *envelope*. The same night then reports **100 % valid, 0 artifacts** —
   a defensible negative (the channel is genuinely clean), with the synthetic
   fixtures still proving each detector fires on its own artifact class.
+- **Statistics calibrated on the real night too.** Layer 2's tidal-volume
+  segmentation went through the same cycle: a short (5 s) baseline chased the
+  breath waveform and the modal breath came out at 1.6 raw units with ~9.5k
+  fragments; the long baseline (45 s) + a peak floor at 12 × the noise step
+  recovers ~6.9k breaths matching the ~6.7k the autocorrelation RR implies
+  (mode ≈ 21, p90 ≈ 33). The mode/bimodality machinery (FD-floored-at-√n
+  bins, valley-separated secondary modes, BC + structure gating) is likewise
+  tuned against the raw night's unimodal distribution rather than assumed.
+- **Always persist the QC report.** Layer 1 writes its `QualityReport` by
+  default (`--report-dir reports/`), so Layer 2 has a stable, reproducible
+  artifact to consume and never silently re-runs detection with possibly
+  different settings.
 - **Default ISO timestamp column** with millisecond precision for high-rate
   subsample rows; `-y`/`-s` kept for backward compatibility.
 - **Runtime safety:** Python 3 enforced at the top of `main()`; invalid/extra
@@ -345,15 +421,16 @@ on real data exposed wrong initial designs (see "Key design decisions"):
 
 - `resmart_parse.py` uses the standard library only (`struct`, `argparse`, `glob`,
   `datetime`); the analysis/plotting scripts use the packages declared in
-  `requirements.txt`: `pandas` (preprocess/analysis), `matplotlib` (plotting),
-  `seaborn` (tidal-volume KDE; its histogram/KDE relies on scipy underneath),
-  `numpy` (quality.py), and `pytest` (dev-only, for the `tests/` suite).
-  No build step, test framework in CI, or linting.
+  `requirements.txt`: `numpy`/`pandas` (preprocess/analysis/stats),
+  `matplotlib` (plotting), `seaborn` (tidal-volume KDE; its histogram/KDE
+  relies on scipy underneath), and `pytest` (dev-only, for the `tests/`
+  suite). No build step, test framework in CI, or linting.
 - Input files are discovered from the **current working directory**; there is no
   directory argument (`scripts` invoked by path, `cwd` = data directory).
 - Python 3 only.
 - `resources\` contains real, sensitive patient data and is gitignored; it must
-  never be committed.
+  never be committed. Derived per-patient artifacts (`reports\`) are likewise
+  gitignored but stay local for stitching sessions and trends.
 - Project and all documentation stay in English (see `AGENTS.md`).
 
 ## 6. Known problems
@@ -386,12 +463,18 @@ on real data exposed wrong initial designs (see "Key design decisions"):
   `preprocess.py` is latent (only exercised by synthetic data / SpO2-less dumps).
 - Event/apnea detection is not implemented (neither the device nor this code
   performs it; the BMC analysis software does).
-- The Layer-1 test suite covers `quality.py` with synthetic fixtures; the
-  parser/preprocess/analysis/plotting code itself is checked only by hashing
-  sample outputs against the previous version (the regression contract).
+- The Layer-1/2 test suites cover `quality.py`/`stats.py` with synthetic
+  fixtures; the parser/preprocess/analysis/plotting code itself is checked
+  only by hashing sample outputs against the previous version (the regression
+  contract).
 - The `resA/B/C` 25 Hz channels carry no unit/scaling confirmation and are
-  analyzed in raw words; the QC thresholds are documented defaults calibrated
-  on one night's data and may need tuning for other devices.
+  analyzed in raw words; the QC thresholds and Layer-2 tidal-volume/peak
+  constants are documented defaults calibrated on one night's data and may
+  need tuning for other devices.
+- Layer-2 tidal volumes are baseline-relative integrals in raw units (never
+  converted to liters) and its `rr` is an autocorrelation estimate from the
+  flow channel — not a clinical respiratory rate; apnea/hypopnea events are
+  not (and cannot be) derived here.
 
 ## 7. Feature roadmap
 
@@ -416,10 +499,15 @@ on real data exposed wrong initial designs (see "Key design decisions"):
   histogram + KDE of tidal volume over the whole frame; seaborn).
 - [done] `quality.py` — Layer 1: `reconcile_units`/`load_session`/
   `resample_signal`/`detect_signal_quality`/`segment_night`, the JSON
-  `QualityReport`, the shaded plot, the `preprocess` CLI and the pytest
-  suite (`tests/test_quality.py`). Next step: per-session aggregated
-  statistics (duration, AHI-style indices, pressure/wave profiles) in
-  `analysis.py`, then richer plots.
+  `QualityReport` (written by default into `reports/`),
+  the shaded plot, the `preprocess` CLI and the pytest suite
+  (`tests/test_quality.py`).
+- [done] `stats.py` — Layer 2: `session_summary`/`volume_distribution`/
+  `respiratory_rate`/`nightly_trend_summary` consuming the persisted
+  `QualityReport`, the `stats`/`trend` CLI, the annotated volume plot and the
+  pytest suite (`tests/test_stats.py`). Next step: time-series/anomaly
+  detection across nights on `reports/nightly_trend.csv`, then AHI-style
+  event analysis (scope permitting).
 - `graph_data.py`: turn the placeholder into a real viewer that reads the
   cleaned CSV (daily hour strip chart, IPAP/EPAP/flow traces, spO2 overlay).
 - Optional unit conversion flag (e.g. report IPAP/EPAP in cmH2O instead of raw

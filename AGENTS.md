@@ -4,7 +4,7 @@ Python 3 tools that decode raw SD-card data dumps from a BMC RESmart GII CPAP ma
 
 ## Run / verify
 
-No build system or linting. `resmart_parse.py` uses only the standard library (struct/glob/argparse/datetime); the analysis/plotting scripts use the packages listed in `requirements.txt` (install with `pip install -r requirements.txt`): `pandas` for `preprocess.py`/`analysis.py`, `matplotlib` for `plotting.py`/`analyze_cpap.py`, `seaborn` for the tidal-volume distribution plot (`plot_tidal_volume_distribution`), plus dev-only `pytest` for the Layer-1 test suite in `tests/`.
+No build system or linting. `resmart_parse.py` uses only the standard library (struct/glob/argparse/datetime); the analysis/plotting scripts use the packages listed in `requirements.txt` (install with `pip install -r requirements.txt`): `numpy`/`pandas` for `preprocess.py`/`analysis.py`/`quality.py`/`stats.py`, `matplotlib` for `plotting.py`/`analyze_cpap.py`, `seaborn` for the tidal-volume distribution plot (`plot_tidal_volume_distribution`), plus dev-only `pytest` for the Layer-1/Layer-2 suites in `tests/`.
 
 Run the tests with:
 
@@ -12,7 +12,7 @@ Run the tests with:
 python -m pytest -q
 ```
 
-(22 tests in `tests/test_quality.py`; synthetic fixtures only — nothing real touched.) Verify parser changes by running against the sample dump:
+(22 tests in `tests/test_quality.py` + 12 in `tests/test_stats.py`; synthetic fixtures only — nothing real touched.) Verify parser changes by running against the sample dump:
 
 ```
 python resmart_parse.py -i -q        # run while cwd = dir containing the data files
@@ -23,7 +23,8 @@ python resmart_parse.py -i -q        # run while cwd = dir containing the data f
 - Running with no arguments prints the CLI help to stderr and exits (code 2) — it reads or writes nothing. `RESmart_data.csv` (the default `-o` output file) is written only when output flags are passed; `--info` is read-only and never writes the CSV.
 - The CSV always has a header row naming every column; the first column is an ISO 8601 `timestamp` (`2026-07-21T23:59:45`). Known fields carry their unit in the header (e.g. `IPAP (0.5 cmH2O)`), driven by `packet.known_units`.
 - Regression contract: output must stay byte-identical for the same input/flags. After changing row/header generation, regenerate and hash the 8 mode variants (default, `-y`, `-s`, `-a`, `-2`, `-1`, `-a -y`, `-d` range) against the previous run.
-- Layer-1 verification: `python quality.py preprocess <seg_csv> <session_id> [--report qc.json] --plot` (it loads/reconciles/resamples/detects/segments and writes a JSON `QualityReport`). The detectors are synthetic-fixture-tested; on the real night they are expected to report ~100 % valid (see `DESIGN.md` "Key design decisions").
+- Layer-1 verification: `python quality.py preprocess <seg_csv> <session_id> [--report qc.json] --plot` (it loads/reconciles/resamples/detects/segments and writes a JSON `QualityReport`). The detectors are synthetic-fixture-tested; on the real night they are expected to report ~100 % valid (see `DESIGN.md` "Key design decisions"). Preprocess now always writes the QC JSON — by default `reports/qc_session_<id>_<date>.json` (set `--report-dir`, or `--report` for an explicit path).
+- Layer-2 verification: `python stats.py stats <session_id> --input <csv> [--json out.json]` and `python stats.py trend --input <csv>` (consumes the Layer-1 persist reports via `read_quality_report`; never re-runs QC — a missing report is a clear exit code 2 error instructing `quality.py preprocess`). `reports/` holds derived per-patient artifacts and is gitignored; SessionData/QualityReport flow is: `load_session` → same resample grid as quality → `valid_mask` (report.intervals complement) → `session_summary`/`volume_distribution`/`respiratory_rate` → `nightly_trend_summary`.
 - Requires Python 3 (hard-exits otherwise at module top, before arg parsing).
 
 ## Language / git
@@ -37,3 +38,4 @@ python resmart_parse.py -i -q        # run while cwd = dir containing the data f
 - Field indexes: code reads 106 words (`packet.dlen`) + 8-byte timestamp; `known_fields` in `packet.setup_labels` is the source of truth. The README address table is loose guesswork and does not match the code exactly.
 - `graph_data.py` is an unfinished placeholder GUI that plots random data — it does not read RESmart data yet.
 - `resources\` holds a real patient data dump (large, ~500 MB) of sensitive medical data. It is gitignored — never commit it or any `*.nnn/.usr/.log/.evt/.idx` data.
+- `reports\` holds derived per-patient artifacts (QC JSON, nightly trend, plots). It is gitignored — never commit it.

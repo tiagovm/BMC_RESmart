@@ -700,6 +700,36 @@ def write_quality_report(report, path):
     return path
 
 
+def read_quality_report(path):
+    """Load a persisted QualityReport (JSON) back into the dataclasses.
+
+    Inverse of :func:`write_quality_report`; restores interval timestamps as
+    ``pd.Timestamp``. Raises ``ValueError`` for files missing the required
+    ``session_id``/``channel``/``sample_rate_hz`` fields.
+    """
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    return QualityReport(
+        session_id=int(data["session_id"]),
+        channel=str(data["channel"]),
+        sample_rate_hz=float(data["sample_rate_hz"]),
+        total_samples=int(data.get("total_samples", 0)),
+        valid_samples=int(data.get("valid_samples", 0)),
+        valid_pct=float(data.get("valid_pct", 0.0)),
+        intervals=[
+            SuspiciousInterval(
+                start=pd.Timestamp(iv["start"]),
+                end=pd.Timestamp(iv["end"]),
+                kind=str(iv["kind"]),
+            )
+            for iv in data.get("intervals", [])
+        ],
+        counts_by_kind=dict(data.get("counts_by_kind", {})),
+        warnings=list(data.get("warnings", [])),
+        params=dict(data.get("params", {})),
+    )
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description=(
@@ -723,7 +753,11 @@ def build_parser():
                    choices=["resA", "resB", "resC", "pulse"],
                    help="signal channel to analyze (default: resA)")
     p.add_argument("--report", default=None,
-                   help="write the QualityReport JSON to this path")
+                   help="write the QualityReport JSON to this path (default: "
+                        "<report-dir>/qc_session_<id>_<date>.json)")
+    p.add_argument("--report-dir", default="reports",
+                   help="directory for the default QualityReport JSON "
+                        "(default: reports/)")
     p.add_argument("--target-hz", type=float, default=None,
                    help="resample the signal to this rate "
                         "(default: measured rate, ~25)")
@@ -825,9 +859,16 @@ def main(argv=None):
         _print_segments(segments)
 
         if args.report:
-            write_quality_report(report, args.report)
-            print()
-            print("wrote {}".format(args.report))
+            report_path = args.report
+        else:
+            report_path = os.path.join(
+                args.report_dir,
+                "qc_session_{0}_{1:%Y-%m-%d}.json".format(
+                    session.session_id, session.start))
+            os.makedirs(args.report_dir, exist_ok=True)
+        write_quality_report(report, report_path)
+        print()
+        print("wrote {}".format(report_path))
 
         if args.plot:
             if not args.show:

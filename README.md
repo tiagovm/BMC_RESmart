@@ -28,11 +28,11 @@ currently supported by the software here.
 End-to-end usage of the scripts in this repository.
 
 Python dependencies for the analysis/plotting steps are listed in
-`requirements.txt` (`pip install -r requirements.txt`): `pandas` for
-preprocessing/analysis, `matplotlib` for plotting, and `seaborn` for the
-tidal-volume distribution plot. `resmart_parse.py` itself is standard
-library only. `pytest` (dev-only) runs the Layer-1 test suite in `tests/`:
-`python -m pytest -q`.
+`requirements.txt` (`pip install -r requirements.txt`): `numpy`/`pandas`
+for preprocessing/analysis/statistics, `matplotlib` for plotting, and
+`seaborn` for the tidal-volume distribution plot. `resmart_parse.py` itself
+is standard library only. `pytest` (dev-only) runs the Layer-1 and Layer-2
+test suites in `tests/`: `python -m pytest -q`. Not for medical use.
 
 ### 1. Get the data off the device
 
@@ -226,7 +226,55 @@ transitions are legit signal — see `DESIGN.md`):
   bins): its 300 s rolling mean leaving the session median by > 0.5 of the
   envelope scale. Requires ≥ 300 s of data, else skipped.
 
-### 8. All-in-one option (analyze_cpap.py)
+### 8. Descriptive statistics per session (stats.py, Layer 2)
+
+`stats.py` is the second analysis layer: it turns one session's signal and
+its persisted `QualityReport` (Layer 1) into descriptive statistics — usage,
+flow shape, per-breath tidal volume with its distribution, and a respiratory
+rate estimate — plus a one-row-per-night trend across sessions. It never
+re-loads or re-checks the signal itself: `quality.py preprocess` must have
+run first and written the JSON report (Layer 1 now does so by default into
+`reports/`, gitignored). Not for medical use.
+
+    python stats.py stats 2 --input sessions.csv       # detail for session 2
+    python stats.py stats 2 --input out2.csv --json stats_2.json
+    python stats.py trend --input sessions.csv         # one row per night
+
+Both subcommands accept the raw parser CSV (step 3, `-2` gives the 25 Hz
+`resA` waveform) or the segmented CSV (step 5); they locate each session's
+`QualityReport` at `reports/qc_session_<id>_<date>.json` unless
+`--report-path` (`stats`) or `--report-dir` (both) is given. A missing
+report is a clear error telling you to run `quality.py preprocess` first —
+the layer never silently re-runs QC.
+
+`stats` prints:
+
+- **usage** — hours used / hours on record, and the % of samples the QC
+  pass marked valid; every figure below is computed on those samples only;
+- **flow shape** — median / mean / IQR / p05 / p95 of the signal in raw
+  units;
+- **tidal volume** — per-breath integrals over the inspiratory phases (raw
+  units: `resA` scaling is unconfirmed, so volumes are never converted to
+  liters), with the distribution's mode, p90, skew, kurtosis and Hartigan's
+  bimodality coefficient (BC > ~0.555 hints at bimodality; a session is
+  flagged `bimodal` only when BC *and* a valley-separated secondary mode
+  agree);
+- **respiratory rate** — per-5-min-block estimates from the flow's
+  autocorrelation (lag peak in 2-10 s → 6-30 bpm), summarized as
+  median/IQR with block coverage. This is a *flow-derived estimate*, not a
+  clinical rate; apnea/hypopnea events remain out of scope (BMC software
+  only).
+
+`--json PATH` writes the full structured result (session + distribution +
+per-block RR table), `--plot` renders the annotated volume-distribution
+histogram (`-o out.png`, `--show` to display), and `--channel` switches the
+analyzed signal (resA/resB/resC/pulse).
+
+`trend` aggregates one row per session night (usage, validity, flow median,
+tidal mode, mean RR) into `reports/nightly_trend.csv`, the input basis for
+the later time-series/anomaly layers.
+
+### 9. All-in-one option (analyze_cpap.py)
 
 For convenience, steps 4-6 can be chained into a single command that
 takes the raw step-3 export and does clean → segment → plot internally
