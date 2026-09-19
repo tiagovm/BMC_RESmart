@@ -274,7 +274,53 @@ analyzed signal (resA/resB/resC/pulse).
 tidal mode, mean RR) into `reports/nightly_trend.csv`, the input basis for
 the later time-series/anomaly layers.
 
-### 9. All-in-one option (analyze_cpap.py)
+### 9. Respiratory events and timeline (events.py, Layer 3)
+
+`events.py` is the third analysis layer: it detects respiratory events from
+the flow signal and builds the per-night timeline, consuming the same
+`SessionData` + persisted `QualityReport` as Layer 2 (nothing is reloaded or
+re-checked). Not for medical use.
+
+    python events.py events 2 --input sessions.csv --json events_2.json
+    python events.py events 2 --input out2.csv --plot -o night_events.png
+    python events.py events-report --input sessions.csv   # one row per night
+
+`events` works on a single session and reports:
+
+- **mask removal** — sustained near-zero-activity stretches (≥ 2 min by
+  default) are read as the mask being off, not as physiology. The activity
+  threshold is derived from the data (20 % of the night's median per-second
+  amplitude) and surfaced so the report states what was decided;
+- **events** — sustained amplitude reductions of the per-second flow
+  envelope vs. a *local* 5-minute rolling baseline: a drop of ≥ 30 % lasting
+  ≥ 10 s is a hypopnea, ≥ 80 % an apnea (simplified AASM conventions, flow
+  derived only — no oximetry, no thoracic-effort channel, central vs.
+  obstructive not separable). Each event carries start/end timestamps,
+  duration, reduction, type and a quality flag: events overlapping a
+  QC-suspect interval (flatline/clipping/spike/drift) or sitting mostly on
+  invalid samples are marked `suspect` and never presented as clean
+  physiology;
+- **estimated_AHI** — events per QC-valid usage hour (the Layer-2 effective
+  use, not wall-clock); both a total and a confident variant that excludes
+  suspect events. A flow-based estimate, never a clinical AHI;
+- **timeline** — the events above, sorted chronologically with their
+  wall-clock hour band (midnight-crossing sessions keep the correct dates),
+  persisted to `reports/events_session_<id>_<date>.csv` and rendered with
+  `--plot` (mask removal in gray, suspect events hatched).
+
+`events-report` aggregates one row per session night (usage, event count,
+suspect share, estimated_AHI + confident variant, per-hour breakdown, mask
+removals) into `reports/events_summary.csv`.
+
+Both subcommands accept the raw parser CSV (step 3, `-2`) or the segmented
+CSV (step 5) and locate each `QualityReport` at
+`reports/qc_session_<id>_<date>.json` unless `--report-path`/`--report-dir`
+tells them otherwise; a missing report is a clear error pointing at
+`quality.py preprocess` — the layer never re-runs QC. Tunables: `--drop-pct`,
+`--min-duration-s`, `--apnea-drop-pct`, `--mask-off-minutes` (and
+`--mask-off-threshold` to pin the mask-removal threshold).
+
+### 10. All-in-one option (analyze_cpap.py)
 
 For convenience, steps 4-6 can be chained into a single command that
 takes the raw step-3 export and does clean → segment → plot internally

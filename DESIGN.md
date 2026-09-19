@@ -8,6 +8,7 @@ Design documentation for the BMC RESmart GII parser.
   `plotting.py` + `analyze_cpap.py` (matplotlib plots and the chained CLI),
   `quality.py` (Layer 1: ingest, preprocess, signal-quality control, CLI + pytest suite),
   `stats.py` (Layer 2: descriptive per-session statistics + nightly trend, CLI + pytest suite),
+  `events.py` (Layer 3: respiratory events + per-night timeline, CLI + pytest suite),
   and `graph_data.py` (incomplete GUI).
 - Requirements on the toolchain: Python 3, standard library for
   `resmart_parse.py`; pandas/numpy for `preprocess.py`/`analysis.py`/
@@ -370,6 +371,68 @@ SessionData (load_session) + QualityReport (read_quality_report)
   jitter lobes, no-breaths/no-valid-sample edge cases, trend aggregation, and
   both CLIs' JSON/CSV outputs and fail-fast report handling.
 
+### Layer 3: respiratory events and timeline (`events.py`)
+
+Layer 3 consumes the same two Layer-1 artifacts (never reloading the signal
+or re-running QC) and detects respiratory events from the flow amplitude,
+producing the canonical `Event` schema and its per-night aggregation:
+
+```
+SessionData + QualityReport
+        -> _analysis_frame (same identity resample grid) + valid_mask (Layer 2)
+        -> detect_mask_removal   (long near-zero stretches, ~0.2 x median activity)
+        -> detect_flow_limitation (per-second envelope vs. 5-min rolling baseline)
+        -> list[Event] -> event_timeline -> reports/events_session_*.csv
+        -> estimate_ahi (events per QC-valid usage hour)
+        -> events_report (one row per night) -> reports/events_summary.csv
+```
+
+- **Per-second envelope.** Respiratory activity is the standard deviation of
+  the raw samples inside each wall-clock second (a quiet breath ≈ amp/√2),
+  smoothed with a 5 s median. It is compared against a *local* baseline — the
+  rolling median over 5 min (min 90 s of history) — so slow changes across
+  the night do not distort the reference. Seconds with < 10 samples are NaN
+  (unknown), never "no flow".
+- **Event definition (simplified AASM).** A run of seconds whose envelope
+  stays below `(1 - drop_pct) × baseline` (default 30 %) for at least
+  `min_duration_s` (default 10 s) is one event; `reduction = 1 - median
+  envelope / median baseline`, and a reduction ≥ 80 % is called a probable
+  apnea, else hypopnea. The 25 Hz grid resolves far more than the 10 s floor;
+  the floor is an honest lower cutoff (shorter pauses are not reported).
+- **Mask removal, not an event.** The mask-off stretches (per-second activity
+  below a data-derived threshold = 20 % of the night's median activity, for
+  ≥ 2 min) are excluded from event detection so a dead sensor is never scored
+  as apnea. The derivation and the exact threshold are surfaced in the report.
+- **Honest quality flag.** An event overlapping a QC-suspect interval
+  (flatline/clipping/spike/drift) or with < 90 % valid samples is
+  `quality_flag="suspect"` (never presented as physiology, hatched in the
+  plot); `confidence` is `"high"` only for fully-valid, QC-clean events.
+  `estimated_ahi_confident` counts only the clean ones.
+- **estimated_AHI denominator = effective use.** Same definition as Layer-2
+  `night_usage` (`valid_samples × measured period`), so the two layers agree;
+  both a total and a confident variant are reported, and both are `None` when
+  no valid use exists.
+- **Midnight-aware timeline.** Events carry the full date+time (sessions
+  cross midnight) and a `hour_of_night` wall-clock band, so "which hour of
+  the night" counts remain correct.
+- Missing `QualityReport` errors immediately naming the session (CLI exit
+  code 2), exactly as in Layer 2.
+- CLI: `python events.py events <session_id> --input <csv> [--json out.json]
+  [--csv events.csv] [--plot] [-o events.png] [--show] [--channel resA]
+  [--report-path p] [--report-dir reports] [--drop-pct 0.30]
+  [--min-duration-s 10] [--apnea-drop-pct 0.80] [--mask-off-minutes 2]
+  [--mask-off-threshold]` and `python events.py events-report --input <csv>
+  [--all] [--output reports/events_summary.csv] [--report-dir reports]`.
+- Test suite: `tests/test_events.py` (15 tests). Synthetic 60 bpm sine
+  fixtures (one full cycle per second → a constant amp/√2 envelope) verify:
+  known dips (count, timestamps, duration, reduction ≈ 0.9, apnea
+  classification), sub-10 s dips ignored, hypopnea at ~0.55 reduction,
+  suspect flagging on QC overlap, mask-removal detection + exclusion (180 s
+  dead stretch) and dead-not-mask stretches still scored as apnea, midnight
+  hour bands and `events_by_hour`, usage-based (`estimated_AHI`) vs
+  wall-clock, zero-usage None, empty-timeline columns, and the
+  `events`/`events-report` CLIs including a missing-report exit 2.
+
 ## 4. Key design decisions
 
 - **Streaming over accumulate-then-write.** The original implementation parsed
@@ -412,9 +475,19 @@ SessionData (load_session) + QualityReport (read_quality_report)
   bins, valley-separated secondary modes, BC + structure gating) is likewise
   tuned against the raw night's unimodal distribution rather than assumed.
 - **Always persist the QC report.** Layer 1 writes its `QualityReport` by
-  default (`--report-dir reports/`), so Layer 2 has a stable, reproducible
-  artifact to consume and never silently re-runs detection with possibly
-  different settings.
+  default (`--report-dir reports/`), so Layers 2 and 3 have a stable,
+  reproducible artifact to consume and never silently re-run detection with
+  possibly different settings.
+- **Layer 3 uses the same identity resample grid and the same effective-usage
+  denominator as Layer 2.** The envelope, the event timeline and the
+  `estimated_AHI` all agree with `valid_mask`/`night_usage`, so a number shown
+  for a night is the same number in both layers.
+- **The amplitude envelope is a robust proxy for breathing activity.** The
+  detector reasons in per-second standard deviation (quiet breath ≈ amp/√2)
+  against a local 5-minute baseline; on the real 100 %-valid night this
+  yields a defensible night profile (70 events, `estimated_AHI` ≈ 10 /h, 0
+  suspect, no mask removal) rather than the artifact-heavy over-firing the
+  earlier pointwise approaches produced.
 - **Default ISO timestamp column** with millisecond precision for high-rate
   subsample rows; `-y`/`-s` kept for backward compatibility.
 - **Runtime safety:** Python 3 enforced at the top of `main()`; invalid/extra
@@ -465,20 +538,24 @@ SessionData (load_session) + QualityReport (read_quality_report)
   `preprocess.py` strips them.
 - The sample dump contains no `65535` values, so the invalid-to-NaN path in
   `preprocess.py` is latent (only exercised by synthetic data / SpO2-less dumps).
-- Event/apnea detection is not implemented (neither the device nor this code
-  performs it; the BMC analysis software does).
-- The Layer-1/2 test suites cover `quality.py`/`stats.py` with synthetic
-  fixtures; the parser/preprocess/analysis/plotting code itself is checked
-  only by hashing sample outputs against the previous version (the regression
-  contract).
+- Event/apnea detection is flow-derived only: there is no oximetry and no
+  thoracic-effort channel on this device, so central vs. obstructive cannot be
+  separated and `estimated_AHI` is an *estimate*, never a clinical AHI. Events
+  shorter than the 10 s floor are not reported even though the grid resolves
+  them, and the apnea/hypopnea split rests on the simplified 30 %/80 % AASM
+  drop thresholds.
+- The Layer-1/2/3 test suites cover `quality.py`/`stats.py`/`events.py` with
+  synthetic fixtures; the parser/preprocess/analysis/plotting code itself is
+  checked only by hashing sample outputs against the previous version (the
+  regression contract).
 - The `resA/B/C` 25 Hz channels carry no unit/scaling confirmation and are
-  analyzed in raw words; the QC thresholds and Layer-2 tidal-volume/peak
-  constants are documented defaults calibrated on one night's data and may
-  need tuning for other devices.
+  analyzed in raw words; the QC thresholds and the Layer-2/3 amplitude,
+  baseline and event constants are documented defaults calibrated on one
+  night's data and may need tuning for other devices.
 - Layer-2 tidal volumes are baseline-relative integrals in raw units (never
   converted to liters) and its `rr` is an autocorrelation estimate from the
-  flow channel — not a clinical respiratory rate; apnea/hypopnea events are
-  not (and cannot be) derived here.
+  flow channel — not a clinical respiratory rate. Layer-3 `estimated_AHI` is a
+  flow-derived count per usage hour, not a polysomnographic AHI.
 
 ## 7. Feature roadmap
 
@@ -512,6 +589,12 @@ SessionData (load_session) + QualityReport (read_quality_report)
   pytest suite (`tests/test_stats.py`). Next step: time-series/anomaly
   detection across nights on `reports/nightly_trend.csv`, then AHI-style
   event analysis (scope permitting).
+- [done] `events.py` — Layer 3: `detect_mask_removal`/`detect_flow_limitation`/
+  `estimate_ahi`/`event_timeline`/`events_report` consuming the persisted
+  `QualityReport`, the `events`/`events-report` CLI, the annotated night plot
+  and the pytest suite (`tests/test_events.py`). Next step remains
+  time-series/anomaly detection across nights (now on `reports/nightly_trend.csv`
+  plus `reports/events_summary.csv`).
 - `graph_data.py`: turn the placeholder into a real viewer that reads the
   cleaned CSV (daily hour strip chart, IPAP/EPAP/flow traces, spO2 overlay).
 - Optional unit conversion flag (e.g. report IPAP/EPAP in cmH2O instead of raw

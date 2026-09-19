@@ -12,7 +12,8 @@ Run the tests with:
 python -m pytest -q
 ```
 
-(25 tests in `tests/test_quality.py` + 18 in `tests/test_stats.py`; synthetic fixtures only — nothing real touched.) Verify parser changes by running against the sample dump:
+(25 tests in `tests/test_quality.py` + 18 in `tests/test_stats.py` + 15 in
+`tests/test_events.py`; synthetic fixtures only — nothing real touched.) Verify parser changes by running against the sample dump:
 
 ```
 python resmart_parse.py -i -q        # run while cwd = dir containing the data files
@@ -25,6 +26,7 @@ python resmart_parse.py -i -q        # run while cwd = dir containing the data f
 - Regression contract: output must stay byte-identical for the same input/flags. After changing row/header generation, regenerate and hash the 8 mode variants (default, `-y`, `-s`, `-a`, `-2`, `-1`, `-a -y`, `-d` range) against the previous run.
 - Layer-1 verification: `python quality.py preprocess <seg_csv> <session_id> [--report qc.json] --plot` (it loads/reconciles/resamples/detects/segments and writes a JSON `QualityReport`). The detectors are synthetic-fixture-tested; on the real night they are expected to report ~100 % valid (see `DESIGN.md` "Key design decisions"). Preprocess now always writes the QC JSON — by default `reports/qc_session_<id>_<date>.json` (set `--report-dir`, or `--report` for an explicit path).
 - Layer-2 verification: `python stats.py stats <session_id> --input <csv> [--json out.json]` and `python stats.py trend --input <csv>` (consumes the Layer-1 persist reports via `read_quality_report`; never re-runs QC — a missing report is a clear exit code 2 error instructing `quality.py preprocess`). `reports/` holds derived per-patient artifacts and is gitignored; SessionData/QualityReport flow is: `load_session` → same resample grid as quality → `valid_mask` (report.intervals complement) → `session_summary`/`volume_distribution`/`respiratory_rate` → `nightly_trend_summary`.
+- Layer-3 verification: `python events.py events <session_id> --input <csv> [--json out.json] [--csv events.csv] [--plot]` and `python events.py events-report --input <csv>` (same QC-report contract; missing report → exit code 2). Same grid/`valid_mask`/usage denominators as Layer 2, plus `detect_mask_removal`/`detect_flow_limitation`/`estimate_ahi`/`event_timeline`/`events_report`; per-night artifacts land in `reports/events_session_*.csv` + `reports/events_summary.csv`. `estimated_ahi` counts events per QC-valid usage hour and is flow-derived only — never a clinical AHI.
 - Requires Python 3 (hard-exits otherwise at module top, before arg parsing).
 
 ## Language / git
