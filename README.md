@@ -30,9 +30,10 @@ End-to-end usage of the scripts in this repository.
 Python dependencies for the analysis/plotting steps are listed in
 `requirements.txt` (`pip install -r requirements.txt`): `numpy`/`pandas`
 for preprocessing/analysis/statistics, `matplotlib` for plotting, and
-`seaborn` for the tidal-volume distribution plot. `resmart_parse.py` itself
-is standard library only. `pytest` (dev-only) runs the Layer-1 and Layer-2
-test suites in `tests/`: `python -m pytest -q`. Not for medical use.
+`seaborn` for the tidal-volume distribution plot. The `parse` step
+(`resmart/parse.py`) itself is standard library only. `pytest` (dev-only)
+runs the test suites in `tests/` (66 tests: 25 quality + 18 stats + 15
+events + 8 CLI): `python -m pytest -q`. Not for medical use.
 
 ### 1. Get the data off the device
 
@@ -56,25 +57,28 @@ software and are not read by the parser.
 From inside the data folder, run the parser in read-only info mode (`-i`
 never writes a file):
 
-    python resmart_parse.py -i -q
+    python -m resmart parse -i -q
 
 It prints a day-by-day summary: hours with recorded data, whether pulse
 data is present, and session length.
 
-> Note: there is no directory argument. The parser looks for `*.nnn`
+> Note: there is no directory argument. The `parse` step looks for `*.nnn`
 > files in the current working directory, so `cd` into the data folder
-> (e.g. `resources\2026-09-18\`) and give the script's full path:
-> `python ..\..\resmart_parse.py -i -q`.
+> (e.g. `resources\2026-09-18\`) first. Because the code now lives in the
+> `resmart/` package, running `python -m resmart parse` from that folder
+> needs the repo root on `PYTHONPATH` (PowerShell:
+> `$env:PYTHONPATH='C:\Users\tiago\OneDrive\Documentos\Devel\BMC_RESmart'`).
+> From the repo root itself it just works.
 
 ### 3. Export the data to CSV
 
 Still inside the data folder, export to a CSV (the file appears
 immediately; reading is streaming, roughly 2 seconds per day):
 
-    python resmart_parse.py -o out.csv                       # whole card
-    python resmart_parse.py -o out.csv -d 2026-07-21         # one day
-    python resmart_parse.py -o out.csv -d 2026-07-21 2026-07-31   # date range
-    python resmart_parse.py -a -o out.csv                    # every raw field
+    python -m resmart parse -o out.csv                       # whole card
+    python -m resmart parse -o out.csv -d 2026-07-21         # one day
+    python -m resmart parse -o out.csv -d 2026-07-21 2026-07-31   # date range
+    python -m resmart parse -a -o out.csv                    # every raw field
 
 - Without `-d` the whole card is exported (this dump: ~500 MB input,
   ~92 MB / 1.97 M rows of CSV in ~14 s).
@@ -85,13 +89,13 @@ immediately; reading is streaming, roughly 2 seconds per day):
 
 ### 4. Clean and preprocess the CSV
 
-The analysis-ready step (`preprocess.py`, requires pandas):
+The analysis-ready step (`python -m resmart preprocess`, requires pandas):
 
-    python preprocess.py out.csv            # prints shape + data summary
+    python -m resmart preprocess out.csv            # prints shape + data summary
 
 or, for use inside your own analysis code:
 
-    from preprocess import clean_and_preprocess
+    from resmart.preprocess import clean_and_preprocess
     df = clean_and_preprocess("out.csv")
 
 It returns a DataFrame where the ISO timestamps are real datetimes,
@@ -105,16 +109,16 @@ The device records one packet per second while it is powered on (a night
 of use) and nothing while it is off (the daytime). A session is a
 contiguous block of use, isolated by large gaps in the timeline:
 
-    from analysis import segment_sessions
+    from resmart.analysis import segment_sessions
     df = segment_sessions(df)                 # default: new session after 4 h
 
 or standalone (which also prints a per-session summary):
 
-    python analysis.py out.csv                # analysis.py out.csv 6 (limit hours)
+    python -m resmart segment out.csv         # python -m resmart segment out.csv 6 (limit hours)
 
 To keep the segmented frame for the next steps, persist it with `-o`:
 
-    python analysis.py out.csv -o sessions.csv
+    python -m resmart segment out.csv -o sessions.csv
 
 `segment_sessions` adds a `session_id` column (integer, sessions start at
 1) that every row of the same night shares. Only a gap of more than
@@ -129,24 +133,24 @@ The cleaned, session-tagged DataFrame from steps 4-5 is the common input
 for the analysis and visualization scripts (statistics per session,
 plots, etc.). Obey the data contract below when writing them.
 
-Plotting is its own step (`plotting.py`), fed by the segmented CSV saved
-at the end of step 5 with `analysis.py -o`:
+Plotting is its own step (`python -m resmart plot`), fed by the segmented CSV saved
+at the end of step 5 with `python -m resmart segment -o`:
 
-    python plotting.py -i sessions.csv --session 3        # night 3 -> PNG
-    python plotting.py -i sessions.csv --overlay 10       # last 10 nights overlapped
-    python plotting.py -i sessions.csv --overlay 10 --overlay-epap   # ... + EPAP
-    python plotting.py -i sessions.csv --show             # most recent night, on screen
-    python plotting.py -i sessions.csv -o night.png
-    python plotting.py -i sessions.csv --tidal            # tidal-volume histogram + KDE
+    python -m resmart plot -i sessions.csv --session 3        # night 3 -> PNG
+    python -m resmart plot -i sessions.csv --overlay 10       # last 10 nights overlapped
+    python -m resmart plot -i sessions.csv --overlay 10 --overlay-epap   # ... + EPAP
+    python -m resmart plot -i sessions.csv --show             # most recent night, on screen
+    python -m resmart plot -i sessions.csv -o night.png
+    python -m resmart plot -i sessions.csv --tidal            # tidal-volume histogram + KDE
 
 To plot the measured 25 Hz waveform (the configured IPAP/EPAP are flat
 presets, see Data format), the *export* must have used `-2`, and the same
 steps 4-5 then produce a segmented CSV with the wave columns. Because
-`analysis.py` cleans internally, only two commands are needed:
+the `segment` step cleans internally, only two commands are needed:
 
-    python resmart_parse.py -2 -o wave.csv -d 2026-07-21
-    python analysis.py wave.csv -o sessions.csv           # clean + segment + save
-    python plotting.py -i sessions.csv --wave resA        # also: resB, resC, pulse
+    python -m resmart parse -2 -o wave.csv -d 2026-07-21
+    python -m resmart segment wave.csv -o sessions.csv    # clean + segment + save
+    python -m resmart plot -i sessions.csv --wave resA    # also: resB, resC, pulse
 
 - `-i/--input` is the segmented CSV from step 5 (already cleaned, sorted,
   with `session_id`); the plotting step deliberately does not re-run
@@ -175,14 +179,14 @@ steps 4-5 then produce a segmented CSV with the wave columns. Because
   next to the input unless `-o` is given; `--show` displays it on screen
   instead (no Agg backend).
 - Programmatic use: `plot_pressure_curve(session_df)` and
-  `plot_overlapped_sessions(df, num_sessions=10)` from `plotting.py`
+  `plot_overlapped_sessions(df, num_sessions=10)` from `resmart.plotting`
   return the Matplotlib figure/axes for a single-session DataFrame;
   `plot_tidal_volume_distribution(df)` does the same for the whole cleaned
   frame.
 
-### 7. Verify signal quality (quality.py, Layer 1)
+### 7. Verify signal quality (Layer 1, quality step)
 
-`quality.py` is the first analysis layer: it ingests a session's signal,
+The `quality` step is the first analysis layer: it ingests a session's signal,
 preprocesses it (reconcile units → load → resample), runs detection on
 flatline/clipping/spike/drift artifacts, splits the night into hourly
 activity blocks, and emits a machine-readable JSON report plus (optionally)
@@ -193,9 +197,9 @@ It consumes either the raw parser CSV (step 3) or the segmented CSV
 column. The `-2` export is preferred so the 25 Hz `resA` waveform is
 analyzed (default channel `--channel resA`):
 
-    python quality.py preprocess out2.csv 2 --report qc.json --plot -o qc.png
-    python quality.py preprocess sessions.csv 1 --report qc_1.json
-    python quality.py preprocess sessions.csv 2 --plot --show
+    python -m resmart quality preprocess out2.csv 2 --report qc.json --plot -o qc.png
+    python -m resmart quality preprocess sessions.csv 1 --report qc_1.json
+    python -m resmart quality preprocess sessions.csv 2 --plot --show
 
 Prints a text summary (valid fraction, suspect intervals, night blocks)
 and, with `--report`, writes a JSON `QualityReport` sized for downstream
@@ -226,25 +230,25 @@ transitions are legit signal — see `DESIGN.md`):
   bins): its 300 s rolling mean leaving the session median by > 0.5 of the
   envelope scale. Requires ≥ 300 s of data, else skipped.
 
-### 8. Descriptive statistics per session (stats.py, Layer 2)
+### 8. Descriptive statistics per session (Layer 2, stats step)
 
-`stats.py` is the second analysis layer: it turns one session's signal and
+The `stats` step is the second analysis layer: it turns one session's signal and
 its persisted `QualityReport` (Layer 1) into descriptive statistics — usage,
 flow shape, per-breath tidal volume with its distribution, and a respiratory
 rate estimate — plus a one-row-per-night trend across sessions. It never
-re-loads or re-checks the signal itself: `quality.py preprocess` must have
+re-loads or re-checks the signal itself: `python -m resmart quality preprocess` must have
 run first and written the JSON report (Layer 1 now does so by default into
 `reports/`, gitignored). Not for medical use.
 
-    python stats.py stats 2 --input sessions.csv       # detail for session 2
-    python stats.py stats 2 --input out2.csv --json stats_2.json
-    python stats.py trend --input sessions.csv         # one row per night
+    python -m resmart stats 2 --input sessions.csv        # detail for session 2
+    python -m resmart stats 2 --input out2.csv --json stats_2.json
+    python -m resmart stats trend --input sessions.csv    # one row per night
 
 Both subcommands accept the raw parser CSV (step 3, `-2` gives the 25 Hz
 `resA` waveform) or the segmented CSV (step 5); they locate each session's
 `QualityReport` at `reports/qc_session_<id>_<date>.json` unless
 `--report-path` (`stats`) or `--report-dir` (both) is given. A missing
-report is a clear error telling you to run `quality.py preprocess` first —
+report is a clear error telling you to run `python -m resmart quality preprocess` first —
 the layer never silently re-runs QC.
 
 `stats` prints:
@@ -274,16 +278,16 @@ analyzed signal (resA/resB/resC/pulse).
 tidal mode, mean RR) into `reports/nightly_trend.csv`, the input basis for
 the later time-series/anomaly layers.
 
-### 9. Respiratory events and timeline (events.py, Layer 3)
+### 9. Respiratory events and timeline (Layer 3, events step)
 
-`events.py` is the third analysis layer: it detects respiratory events from
+The `events` step is the third analysis layer: it detects respiratory events from
 the flow signal and builds the per-night timeline, consuming the same
 `SessionData` + persisted `QualityReport` as Layer 2 (nothing is reloaded or
 re-checked). Not for medical use.
 
-    python events.py events 2 --input sessions.csv --json events_2.json
-    python events.py events 2 --input out2.csv --plot -o night_events.png
-    python events.py events-report --input sessions.csv   # one row per night
+    python -m resmart events 2 --input sessions.csv --json events_2.json
+    python -m resmart events 2 --input out2.csv --plot -o night_events.png
+    python -m resmart events events-report --input sessions.csv  # one row per night
 
 `events` works on a single session and reports:
 
@@ -316,22 +320,22 @@ Both subcommands accept the raw parser CSV (step 3, `-2`) or the segmented
 CSV (step 5) and locate each `QualityReport` at
 `reports/qc_session_<id>_<date>.json` unless `--report-path`/`--report-dir`
 tells them otherwise; a missing report is a clear error pointing at
-`quality.py preprocess` — the layer never re-runs QC. Tunables: `--drop-pct`,
+`python -m resmart quality preprocess` — the layer never re-runs QC. Tunables: `--drop-pct`,
 `--min-duration-s`, `--apnea-drop-pct`, `--mask-off-minutes` (and
 `--mask-off-threshold` to pin the mask-removal threshold).
 
-### 10. All-in-one option (analyze_cpap.py)
+### 10. All-in-one option (analyze step)
 
 For convenience, steps 4-6 can be chained into a single command that
 takes the raw step-3 export and does clean → segment → plot internally
-(`analyze_cpap.py`):
+(`python -m resmart analyze`):
 
-    python analyze_cpap.py -i out.csv --session 3        # night 3 -> PNG
-    python analyze_cpap.py -i out.csv --overlay 10       # last 10 nights overlapped
-    python analyze_cpap.py -i out.csv --overlay 10 --overlay-epap   # ... + EPAP
-    python analyze_cpap.py -i out.csv --show             # most recent night, on screen
-    python analyze_cpap.py -i out.csv -o night.png --limit-hours 6
-    python analyze_cpap.py -i out.csv --tidal            # tidal-volume histogram + KDE
+    python -m resmart analyze -i out.csv --session 3        # night 3 -> PNG
+    python -m resmart analyze -i out.csv --overlay 10       # last 10 nights overlapped
+    python -m resmart analyze -i out.csv --overlay 10 --overlay-epap   # ... + EPAP
+    python -m resmart analyze -i out.csv --show             # most recent night, on screen
+    python -m resmart analyze -i out.csv -o night.png --limit-hours 6
+    python -m resmart analyze -i out.csv --tidal            # tidal-volume histogram + KDE
 
 It shares the target/`--overlay`/`--overlay-epap`/`--wave`/`-o`/`--show`
 flags with the plotting CLI of step 6 and adds `--limit-hours` as a
@@ -343,8 +347,19 @@ Use the step-by-step commands when you want to keep and reuse the
 intermediate segmented CSV, or this single command when you only want one
 plot of the full pipeline.
 
-`graph_data.py` is an unfinished placeholder GUI and does not read RESmart
-data yet.
+### 11. One-shot analysis pipeline (pipeline step)
+
+To run the three analysis layers (quality + stats + events) for every
+session in one command, use the one-shot pipeline step:
+
+    python -m resmart pipeline --input sessions.csv --report-dir reports
+
+It runs quality + stats + events for each detected session and materializes
+the same artifacts the individual steps write: per-session
+`qc_session_<id>_<date>.json` and `events_session_<id>_<date>.csv`, plus
+`nightly_trend.csv` and `events_summary.csv` in `--report-dir` (default
+`reports/`). Optional `--steps quality[,stats[,events]]` selects a subset of
+the layers; `--output <dir>` controls the session-plot dir.
 
 ## Data contract for downstream tools
 
@@ -372,18 +387,18 @@ should assume:
   start only where the gap between consecutive rows exceeds
   `limit_hours`. It assumes chronologically sorted data.
 - The standalone plotting CLI (step 6) reads the segmented CSV written by
-  `analysis.py -o` as-is: `timestamp` in ISO format, the `session_id`
+  `python -m resmart segment -o` as-is: `timestamp` in ISO format, the `session_id`
   column, and the data columns (no index row is written). Do not re-order
-  the rows afterwards — `plotting.py` refuses unsorted timestamps.
+  the rows afterwards — `plot` refuses unsorted timestamps.
 
 ## CLI reference
 
 ~~~~
 
-usage: resmart_parse.py [-h] [--info] [--f25_hz] [--f10_hz] [--all_data]
-                        [--time_ymd] [--time_seconds] [--quiet]
-                        [--dates DATES [DATES ...]]
-                        [-o OUTPUT]
+usage: python -m resmart parse [-h] [--info] [--f25_hz] [--f10_hz]
+                               [--all_data] [--time_ymd] [--time_seconds]
+                               [--quiet] [--dates DATES [DATES ...]]
+                               [-o OUTPUT]
 [in a directory containing .000, .001... raw data files ]
 
 options:
@@ -408,7 +423,7 @@ files. --info prints a summary only and never writes the CSV.
 
 Example:
 
-    resmart_parse.py -o out.csv -d 2026-07-21
+    python -m resmart parse -o out.csv -d 2026-07-21
 ~~~~
 
 ## Data format

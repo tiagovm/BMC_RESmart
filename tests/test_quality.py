@@ -10,21 +10,21 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from analysis import segment_sessions
-from preprocess import clean_and_preprocess
-from quality import (
+from resmart.analysis import segment_sessions
+from resmart.preprocess import clean_and_preprocess
+from resmart.quality import (
     DEFAULT_NIGHT_END,
     DEFAULT_NIGHT_START,
     SessionData,
     detect_signal_quality,
     load_session,
-    main,
     read_quality_report,
     reconcile_units,
     resample_signal,
     segment_night,
     write_quality_report,
 )
+from resmart.quality_cli import main
 
 
 def _timed_series(start, n, period_s, value_fn):

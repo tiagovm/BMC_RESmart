@@ -3,15 +3,15 @@
 Requires matplotlib and pandas (approved exceptions). Not for medical use.
 
 Library use:
-    from plotting import plot_pressure_curve, plot_overlapped_sessions
+    from resmart.plotting import plot_pressure_curve, plot_overlapped_sessions
     fig, ax = plot_pressure_curve(session_df)
 
 CLI use (input must be the segmented CSV from step 5, i.e. the output of
-``analysis.py -o``, with a ``session_id`` column):
-    python plotting.py -i sessions.csv --session 3
-    python plotting.py -i sessions.csv --overlay 10
-    python plotting.py -i sessions.csv --wave resA --session 3
-    python plotting.py -i sessions.csv --tidal
+``python -m resmart segment``, with a ``session_id`` column):
+    python -m resmart plot -i sessions.csv --session 3
+    python -m resmart plot -i sessions.csv --overlay 10
+    python -m resmart plot -i sessions.csv --wave resA --session 3
+    python -m resmart plot -i sessions.csv --tidal
 
 The pyplot backend is left to the caller: the CLI forces Agg for file
 output and leaves the default interactive backend for --show. Pyplot is
@@ -25,6 +25,8 @@ import os
 import matplotlib
 
 import pandas as pd
+
+from resmart.io import read_segmented_csv
 
 IPAP_RAW = "IPAP (0.5 cmH2O)"
 EPAP_RAW = "EPAP (0.5 cmH2O)"
@@ -268,36 +270,6 @@ def plot_tidal_volume_distribution(df):
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig, ax
-
-
-def read_segmented_csv(path):
-    """Read the step-5 output (a segmented CSV) for the plotting CLI.
-
-    The file must be the frame written by ``analysis.py -o``: cleaned,
-    chronologically sorted, with the ``session_id`` column added by
-    ``segment_sessions``. The standalone plotting CLI deliberately does not
-    re-run cleaning/segmentation — use ``analyze_cpap.py`` if you want the
-    whole workflow chained into one command.
-
-    The file is the output of ``analysis.py -o``, so it must be already
-    cleaned and chronologically sorted with a ``session_id`` column; column
-    names are stripped defensively. Raises a ValueError with a hint when the
-    sorted, instead of producing a meaningless plot.
-    """
-    df = pd.read_csv(path, parse_dates=["timestamp"])
-    df.columns = [c.strip() for c in df.columns]
-    if "session_id" not in df.columns:
-        raise ValueError(
-            "column 'session_id' not found in {}: run step 5 first "
-            "(python analysis.py <exported.csv> -o <segmented.csv>) "
-            "so the plot sees the sessions".format(path)
-        )
-    if not df["timestamp"].is_monotonic_increasing:
-        raise ValueError(
-            "timestamp must be chronologically sorted: run "
-            "clean_and_preprocess() and segment_sessions() first"
-        )
-    return df
 
 
 def build_parser():

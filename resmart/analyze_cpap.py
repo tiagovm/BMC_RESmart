@@ -7,12 +7,12 @@ time axis relative to each session's start. Requires pandas and matplotlib
 (approved exceptions). Not for medical use.
 
 Examples:
-    python analyze_cpap.py -i out.csv --session 3
-    python analyze_cpap.py -i out.csv --overlay 10
-    python analyze_cpap.py -i out.csv --overlay 10 --overlay-epap
-    python analyze_cpap.py -i out.csv --show
-    python analyze_cpap.py -i out.csv -o night.png --limit-hours 6
-    python analyze_cpap.py -i out.csv --tidal
+    python -m resmart analyze -i out.csv --session 3
+    python -m resmart analyze -i out.csv --overlay 10
+    python -m resmart analyze -i out.csv --overlay 10 --overlay-epap
+    python -m resmart analyze -i out.csv --show
+    python -m resmart analyze -i out.csv -o night.png --limit-hours 6
+    python -m resmart analyze -i out.csv --tidal
 """
 
 import argparse
@@ -21,8 +21,8 @@ import sys
 
 import matplotlib
 
-from analysis import segment_sessions
-from preprocess import clean_and_preprocess
+from resmart.analysis import segment_sessions
+from resmart.preprocess import clean_and_preprocess
 
 
 def build_parser():

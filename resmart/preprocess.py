@@ -1,6 +1,6 @@
 """Preprocess a RESmart CSV export into a clean, analysis-ready DataFrame.
 
-Turns the raw parser output (see resmart_parse.py) into a chronologically
+Turns the raw parser output (see resmart.parse) into a chronologically
 ordered table: ISO 8601 timestamps become datetimes, the SD-card wrap-around
 ordering is repaired, and invalid sensor reads (0xFFFF / 65535) become NaN.
 
@@ -15,7 +15,7 @@ import pandas as pd
 INVALID_VALUE = 65535
 
 
-def clean_and_preprocess(caminho_csv):
+def clean_and_preprocess(csv_path):
     """Read, clean and return a RESmart CSV as a DataFrame.
 
     Steps:
@@ -34,7 +34,7 @@ def clean_and_preprocess(caminho_csv):
     circular wrap overlaps. Timestamp with day precision is expected; higher
     sample-rate modes (-2 / -1) carry millisecond timestamps and also work.
     """
-    df = pd.read_csv(caminho_csv, low_memory=False)
+    df = pd.read_csv(csv_path, low_memory=False)
     df.columns = [str(c).strip() for c in df.columns]
 
     df["timestamp"] = pd.to_datetime(df["timestamp"], format="ISO8601", errors="coerce")
@@ -58,7 +58,7 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(__doc__)
-        print("usage: python preprocess.py out.csv", file=sys.stderr)
+        print("usage: python -m resmart preprocess out.csv", file=sys.stderr)
         return 2
     df = clean_and_preprocess(argv[0])
     print(f"{len(df):,} rows x {len(df.columns)} columns")

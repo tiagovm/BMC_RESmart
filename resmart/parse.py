@@ -442,19 +442,21 @@ def parse_dates(args, parser):
     return start_date, end_date
 
 
-def main():
+def main(argv=None):
     if sys.version_info.major < 3:
         print("sorry, requires Python 3.")
         sys.exit(1)
 
     parser = build_parser()
 
+    argv = list(sys.argv[1:] if argv is None else argv)
+
     # no arguments at all: show help and exit without reading or writing any files
-    if len(sys.argv) == 1:
+    if not argv:
         parser.print_help(sys.stderr)
         parser.exit(2)
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     start_date, end_date = parse_dates(args, parser)
 
     # Should probably ensure these files all have the same root...

@@ -11,14 +11,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import events
-from quality import (
+import resmart.events as events
+from resmart.quality import (
     QualityReport,
     SessionData,
     SuspiciousInterval,
     load_session,
     write_quality_report,
 )
+from resmart.events_cli import main
 
 
 def _clean_report(session_id=1, channel="resA", n=0, valid_pct=100.0):
@@ -286,7 +287,7 @@ def test_cli_events_json_and_csv(tmp_path):
     rep.mkdir()
     write_quality_report(_clean_report(1, n=n), str(rep / "qc_session_1_2026-09-17.json"))
     out = tmp_path / "events.json"
-    rc = events.main(["events", "1", "--input", str(csv),
+    rc = main(["events", "1", "--input", str(csv),
                       "--report-dir", str(rep), "--json", str(out)])
     assert rc == 0
 
@@ -309,7 +310,7 @@ def test_cli_events_json_and_csv(tmp_path):
 def test_cli_events_missing_report_returns_2(tmp_path):
     csv = tmp_path / "seq.csv"
     _write_segmented_csv(csv)
-    rc = events.main(["events", "1", "--input", str(csv),
+    rc = main(["events", "1", "--input", str(csv),
                       "--report-path", str(tmp_path / "none.json")])
     assert rc == 2
 
@@ -324,7 +325,7 @@ def test_cli_events_plot_smoke(tmp_path):
     rep.mkdir()
     write_quality_report(_clean_report(1, n=n), str(rep / "qc_session_1_2026-09-17.json"))
     png = tmp_path / "events.png"
-    rc = events.main(["events", "1", "--input", str(csv),
+    rc = main(["events", "1", "--input", str(csv),
                       "--report-dir", str(rep), "--plot", "-o", str(png)])
     assert rc == 0
     assert png.exists()
@@ -349,7 +350,7 @@ def test_cli_events_report_two_sessions(tmp_path):
     write_quality_report(_clean_report(2, n=n),
                          str(rep / "qc_session_2_2026-09-18.json"))
     out = tmp_path / "summary.csv"
-    rc = events.main(["events-report", "--input", str(csv),
+    rc = main(["events-report", "--input", str(csv),
                       "--report-dir", str(rep), "--output", str(out)])
     assert rc == 0
     summ = pd.read_csv(out)
@@ -364,6 +365,6 @@ def test_cli_events_report_two_sessions(tmp_path):
 def test_cli_events_report_missing_report_returns_2(tmp_path):
     csv = tmp_path / "seq.csv"
     _write_segmented_csv(csv, session_id=1)
-    rc = events.main(["events-report", "--input", str(csv),
+    rc = main(["events-report", "--input", str(csv),
                       "--report-dir", str(tmp_path / "empty")])
     assert rc == 2

@@ -11,14 +11,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import stats
-from quality import (
+import resmart.stats as stats
+from resmart.quality import (
     QualityReport,
     SessionData,
     SuspiciousInterval,
     load_session,
     write_quality_report,
 )
+from resmart.stats_cli import main
 
 
 def _clean_report(session_id=1, channel="resA", n=0, valid_pct=100.0):
@@ -189,7 +190,7 @@ def test_cli_stats_json_smoke(tmp_path):
     qc = tmp_path / "qc.json"
     write_quality_report(_clean_report(1, n=7500), str(qc))
     out = tmp_path / "stats.json"
-    rc = stats.main(["stats", "1", "--input", str(csv),
+    rc = main(["stats", "1", "--input", str(csv),
                      "--report-path", str(qc), "--json", str(out)])
     assert rc == 0
     data = json.loads(out.read_text())
@@ -203,7 +204,7 @@ def test_cli_stats_json_smoke(tmp_path):
 def test_cli_stats_missing_report_returns_2(tmp_path):
     csv = tmp_path / "seg.csv"
     _write_segmented_csv(csv, session_id=1)
-    rc = stats.main(["stats", "1", "--input", str(csv),
+    rc = main(["stats", "1", "--input", str(csv),
                      "--report-path", str(tmp_path / "none.json")])
     assert rc == 2
 
@@ -216,7 +217,7 @@ def test_cli_trend_writes_csv(tmp_path):
     write_quality_report(_clean_report(1, n=7500),
                          str(reports_dir / "qc_session_1_2026-09-17.json"))
     out = tmp_path / "trend.csv"
-    rc = stats.main(["trend", "--input", str(csv),
+    rc = main(["trend", "--input", str(csv),
                      "--report-dir", str(reports_dir), "--output", str(out)])
     assert rc == 0
     assert out.exists()
@@ -228,7 +229,7 @@ def test_cli_trend_writes_csv(tmp_path):
 def test_cli_trend_missing_report_returns_2(tmp_path):
     csv = tmp_path / "seg.csv"
     _write_segmented_csv(csv, session_id=1)
-    rc = stats.main(["trend", "--input", str(csv),
+    rc = main(["trend", "--input", str(csv),
                      "--report-dir", str(tmp_path / "empty")])
     assert rc == 2
 
@@ -328,6 +329,6 @@ def test_cli_stats_corrupt_report_returns_2(tmp_path):
     _write_segmented_csv(csv, session_id=1)
     bad = tmp_path / "bad.json"
     bad.write_text(json.dumps({"channel": "resA"}), encoding="utf-8")
-    rc = stats.main(["stats", "1", "--input", str(csv),
+    rc = main(["stats", "1", "--input", str(csv),
                      "--report-path", str(bad)])
     assert rc == 2

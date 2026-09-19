@@ -3,16 +3,20 @@
 Design documentation for the BMC RESmart GII parser.
 
 - Status: reverse-engineered, unofficial, NOT for medical use.
-- Targets: `resmart_parse.py` (parsing + CLI), `preprocess.py` (CSV cleanup, pandas),
+- Targets: the `resmart/` package, reachable through the consolidated CLI
+  `python -m resmart <step>` (`resmart/cli.py` + `resmart/__main__.py`) —
+  `parse.py` (parsing + CLI),
+  `preprocess.py` (CSV cleanup, pandas),
   `analysis.py` (pandas helpers such as session segmentation),
   `plotting.py` + `analyze_cpap.py` (matplotlib plots and the chained CLI),
-  `quality.py` (Layer 1: ingest, preprocess, signal-quality control, CLI + pytest suite),
-  `stats.py` (Layer 2: descriptive per-session statistics + nightly trend, CLI + pytest suite),
-  `events.py` (Layer 3: respiratory events + per-night timeline, CLI + pytest suite),
-  and `graph_data.py` (incomplete GUI).
+  `quality.py` + `quality_cli.py` (Layer 1: ingest, preprocess, signal-quality control, CLI + pytest suite),
+  `stats.py` + `stats_cli.py` (Layer 2: descriptive per-session statistics + nightly trend, CLI + pytest suite),
+  `events.py` + `events_cli.py` (Layer 3: respiratory events + per-night timeline, CLI + pytest suite),
+  and `workflow.py` (one-shot quality + stats + events pipeline).
 - Requirements on the toolchain: Python 3, standard library for
-  `resmart_parse.py`; pandas/numpy for `preprocess.py`/`analysis.py`/
-  `quality.py`, matplotlib for `plotting.py`/`analyze_cpap.py`,
+  `resmart/parse.py`; pandas/numpy for `resmart/preprocess.py`/
+  `resmart/analysis.py`/`resmart/quality.py`/`resmart/stats.py`,
+  matplotlib for `resmart/plotting.py`/`resmart/analyze_cpap.py`,
   pytest (dev-only) for the `tests/` suite.
 
 ## 1. Requirements
@@ -47,7 +51,8 @@ Design documentation for the BMC RESmart GII parser.
 ## 2. Data format
 
 From `README.md` plus reverse engineering; the code in
-`packet.parse_timestamp` / `parse_data` is the source of truth.
+`resmart/parse.py` (`packet.parse_timestamp` / `parse_data`) is the source
+of truth.
 
 - Each raw file is a sequence of 256-byte packets, one packet per second of
   device-on time.
@@ -85,7 +90,7 @@ From `README.md` plus reverse engineering; the code in
 
 ## 3. Architecture
 
-Single-pass, streaming pipeline (`resmart_parse.py`, entry point `main()`):
+Single-pass, streaming pipeline (`resmart/parse.py`, entry point `main()`):
 
 ```
 glob('*.[0-9][0-9][0-9]')  (cwd only — no directory argument)
@@ -121,7 +126,7 @@ Key components:
 Memory stays proportional to one packet plus the write buffer, not to the size
 of the dump.
 
-### Secondary processing: session segmentation (`analysis.py`)
+### Secondary processing: session segmentation (`resmart/analysis.py`)
 
 The parser/preprocess pipeline ends with a chronologically sorted DataFrame of
 one-second packets. The device records only while powered on (nights) and
@@ -150,29 +155,30 @@ degenerates to one session per row (allowed, useless). The function raises a
 `ValueError` if the frame is not already sorted ascending, enforcing the
 pipeline order.
 
-### Tertiary processing: plotting (`plotting.py` + `analyze_cpap.py`)
+### Tertiary processing: plotting (`resmart/plotting.py` + `resmart/analyze_cpap.py`)
 
-Plotting is a two-layer design: `plotting.py` holds the plot functions and a
-**standalone CLI** that consumes the step-5 artifact, while `analyze_cpap.py`
-is a convenience wrapper that chains steps 4-6 into one command from the raw
-step-3 export.
+Plotting is a two-layer design: `resmart/plotting.py` holds the plot
+functions and a **standalone CLI** (`python -m resmart plot`) that consumes
+the step-5 artifact, while `resmart/analyze_cpap.py` is a convenience wrapper
+that chains steps 4-6 into one command from the raw step-3 export.
 
-The standalone step (input = segmented CSV written by `analysis.py -o`,
-never re-cleaned/re-segmented):
+The standalone step (input = segmented CSV written by `python -m resmart
+segment -o`, never re-cleaned/re-segmented):
 
 ```
 read_segmented_csv(sessions.csv)  →  plot_pressure_curve / plot_overlapped_sessions / plot_waveform  →  save/display
 ```
 
-`analyze_cpap.py` chains the whole workflow into one command:
+`resmart/analyze_cpap.py` chains the whole workflow into one command:
 
 ```
 read_csv → clean_and_preprocess → segment_sessions
         → filter to one session_id → plot_pressure_curve → save/display
 ```
 
-- Plotting CLI (`python plotting.py -i sessions.csv ...`): flags
-  `-i/--input` (required; the segmented CSV from `analysis.py -o`),
+- Plotting CLI (`python -m resmart plot -i sessions.csv ...`): flags
+  `-i/--input` (required; the segmented CSV from `python -m resmart segment
+  -o`),
   `--session N` (default: most recent), `--overlay N` (mutually exclusive,
   overlays the last N sessions), `--overlay-epap`,
   `--wave {resA,resB,resC,pulse}`, `-o/--output` PNG (default
@@ -180,8 +186,8 @@ read_csv → clean_and_preprocess → segment_sessions
   `wave_<channel>_session_<id>_<date>.png` next to the input), `--show`.
   It deliberately does **not** re-run cleaning/segmentation — the step-5
   artifact is the single source of truth, so the standalone plot can never
-  disagree with a later `analyze_cpap.py` run on the same steps.
-- `analyze_cpap.py` (all-in-one convenience wrapper): same target/overlay/
+  disagree with a later `analyze` run on the same steps.
+- `analyze` (all-in-one convenience wrapper, `resmart/analyze_cpap.py`): same target/overlay/
   wave/output/show flags, `--limit-hours` added as a segmentation
   passthrough, and `-i` takes the raw step-3 export; it runs
   `clean_and_preprocess` → `segment_sessions` → the same plotting functions.
@@ -193,8 +199,8 @@ read_csv → clean_and_preprocess → segment_sessions
 - `read_segmented_csv(path)`: the plotting CLI's entry point. Reads the CSV
   with pandas (ISO `timestamp` parsed), strips column names defensively, and
   raises descriptive errors when `session_id` is missing (→ run step 5 /
-  `analysis.py -o`) or timestamps are unsorted (→ run `clean_and_preprocess`
-  first).
+  `python -m resmart segment -o`) or timestamps are unsorted (→ run
+  `clean_and_preprocess` first).
 - `plot_pressure_curve(session_df)` converts the raw pressures to cmH2O by
   dividing by 2 — the device stores IPAP/EPAP in 0.5 cmH2O steps, so a raw
   `20` means `10.0 cmH2O` — into `IPAP_cmH2O`/`EPAP_cmH2O` columns, then plots
@@ -226,7 +232,7 @@ read_csv → clean_and_preprocess → segment_sessions
   whole cleaned frame (all sessions together), and the CLI selects it with
   `--tidal`, which is mutually exclusive with the other plot modes.
 
-### Layer 1: ingest, preprocess and quality control (`quality.py`)
+### Layer 1: ingest, preprocess and quality control (`resmart/quality.py`)
 
 Layer 1 sits between segmentation and the event/statistics layers: for a
 chosen session and channel it reconciles known units, resamples the signal
@@ -291,12 +297,13 @@ on real data exposed wrong initial designs (see "Key design decisions"):
   amplitude (5 s window) stays within a physiological band (the 10th
   percentile of the session's positive amplitudes is the default floor).
 - `plot_signal_quality(session, report)` shades invalid stretches on the
-  signal trace (lazy matplotlib backend, mirroring `plotting.py`).
+  signal trace (lazy matplotlib backend, mirroring `resmart/plotting.py`).
 - `write_quality_report(report, path)` persists the JSON artifact.
-- CLI: `python quality.py preprocess --input <csv> <session_id>
+- CLI: `python -m resmart quality preprocess --input <csv> <session_id>
   [--report qc.json] [--plot] [-o out.png] [--show] [--channel resA]
   [--target-hz N] [--spike-rel-factor F] [--clip-lo L] [--clip-hi H]
-  [--limit-hours H]`. The `--report`/`--plot` steps read and merge the
+  [--limit-hours H]` (`resmart/quality_cli.py`). The `--report`/`--plot`
+  steps read and merge the
   already-computed report; `--show` needs an interactive backend.
 - Test suite: `tests/test_quality.py` (25 tests, run with `pytest` from the
   repository root). Synthetic fixtures inject a known flatline, clipped
@@ -306,7 +313,7 @@ on real data exposed wrong initial designs (see "Key design decisions"):
   preprocess CLI's default/`--report` writing, and night-segmentation
   boundaries.
 
-### Layer 2: descriptive statistics per session (`stats.py`)
+### Layer 2: descriptive statistics per session (`resmart/stats.py`)
 
 Layer 2 sits between Layer 1 and the future event/anomaly layers: it turns
 one session's signal and its persisted `QualityReport` into descriptive
@@ -355,11 +362,11 @@ SessionData (load_session) + QualityReport (read_quality_report)
 - `nightly_trend_summary` raises a descriptive error naming the sessions
   missing a `QualityReport` rather than silently re-running QC; the CLI
   fails with exit code 2.
-- CLI: `python stats.py stats <session_id> --input <csv> [--json out.json]
+- CLI: `python -m resmart stats <session_id> --input <csv> [--json out.json]
   [--plot] [-o out.png] [--show] [--channel resA] [--report-path p]
-  [--report-dir reports] [--block-minutes 5]` and `python stats.py trend
-  --input <csv> [--all] [--output reports/nightly_trend.csv]
-  [--report-dir reports]`. Both consume reports named
+  [--report-dir reports] [--block-minutes 5]` and `python -m resmart stats
+  trend --input <csv> [--all] [--output reports/nightly_trend.csv]
+  [--report-dir reports]` (`resmart/stats_cli.py`). Both consume reports named
   `reports/qc_session_<id>_<date>.json` (the Layer-1 default) via
   `read_quality_report`.
 - Test suite: `tests/test_stats.py` (18 tests, `pytest` from the repository
@@ -371,7 +378,7 @@ SessionData (load_session) + QualityReport (read_quality_report)
   jitter lobes, no-breaths/no-valid-sample edge cases, trend aggregation, and
   both CLIs' JSON/CSV outputs and fail-fast report handling.
 
-### Layer 3: respiratory events and timeline (`events.py`)
+### Layer 3: respiratory events and timeline (`resmart/events.py`)
 
 Layer 3 consumes the same two Layer-1 artifacts (never reloading the signal
 or re-running QC) and detects respiratory events from the flow amplitude,
@@ -417,12 +424,13 @@ SessionData + QualityReport
   the night" counts remain correct.
 - Missing `QualityReport` errors immediately naming the session (CLI exit
   code 2), exactly as in Layer 2.
-- CLI: `python events.py events <session_id> --input <csv> [--json out.json]
+- CLI: `python -m resmart events <session_id> --input <csv> [--json out.json]
   [--csv events.csv] [--plot] [-o events.png] [--show] [--channel resA]
   [--report-path p] [--report-dir reports] [--drop-pct 0.30]
   [--min-duration-s 10] [--apnea-drop-pct 0.80] [--mask-off-minutes 2]
-  [--mask-off-threshold]` and `python events.py events-report --input <csv>
-  [--all] [--output reports/events_summary.csv] [--report-dir reports]`.
+  [--mask-off-threshold]` and `python -m resmart events events-report --input
+  <csv> [--all] [--output reports/events_summary.csv]
+  [--report-dir reports]` (`resmart/events_cli.py`).
 - Test suite: `tests/test_events.py` (15 tests). Synthetic 60 bpm sine
   fixtures (one full cycle per second → a constant amp/√2 envelope) verify:
   known dips (count, timestamps, duration, reduction ≈ 0.9, apnea
@@ -496,14 +504,18 @@ SessionData + QualityReport
 
 ## 5. Constraints
 
-- `resmart_parse.py` uses the standard library only (`struct`, `argparse`, `glob`,
-  `datetime`); the analysis/plotting scripts use the packages declared in
+- `resmart/parse.py` uses the standard library only (`struct`, `argparse`, `glob`,
+  `datetime`); the analysis/plotting modules use the packages declared in
   `requirements.txt`: `numpy`/`pandas` (preprocess/analysis/stats),
   `matplotlib` (plotting), `seaborn` (tidal-volume KDE; its histogram/KDE
   relies on scipy underneath), and `pytest` (dev-only, for the `tests/`
   suite). No build step, test framework in CI, or linting.
-- Input files are discovered from the **current working directory**; there is no
-  directory argument (`scripts` invoked by path, `cwd` = data directory).
+- The `parse` step discovers the `*.nnn` input files in the **current working
+  directory**; there is no directory argument. Because the code lives in the
+  `resmart/` package, running `python -m resmart` from a data directory
+  needs the repo root on `PYTHONPATH` (e.g. PowerShell
+  `$env:PYTHONPATH='C:\Users\tiago\OneDrive\Documentos\Devel\BMC_RESmart'`);
+  from the repo root itself it just works.
 - Python 3 only.
 - `resources\` contains real, sensitive patient data and is gitignored; it must
   never be committed. Derived per-patient artifacts (`reports\`) are likewise
@@ -531,21 +543,21 @@ SessionData + QualityReport
 - The final 256-byte packet of each file is skipped, losing up to 1 s per file.
 - spO2/HR are only present when an oximeter is attached; invalid values are
   stored as `0xFFFF` and reported as-is.
-- `graph_data.py` is an unfinished placeholder GUI that plots random data; it
-  does not read RESmart data yet.
 - High-rate modes (`-2`/`-1`) inflate output 25x/10x, producing large CSVs.
 - Raw CSV column names carry a leading space (rows are glued with `", "`);
-  `preprocess.py` strips them.
+  `resmart/preprocess.py` strips them.
 - The sample dump contains no `65535` values, so the invalid-to-NaN path in
-  `preprocess.py` is latent (only exercised by synthetic data / SpO2-less dumps).
+  `resmart/preprocess.py` is latent (only exercised by synthetic data / SpO2-less dumps).
 - Event/apnea detection is flow-derived only: there is no oximetry and no
   thoracic-effort channel on this device, so central vs. obstructive cannot be
   separated and `estimated_AHI` is an *estimate*, never a clinical AHI. Events
   shorter than the 10 s floor are not reported even though the grid resolves
   them, and the apnea/hypopnea split rests on the simplified 30 %/80 % AASM
   drop thresholds.
-- The Layer-1/2/3 test suites cover `quality.py`/`stats.py`/`events.py` with
-  synthetic fixtures; the parser/preprocess/analysis/plotting code itself is
+- The Layer-1/2/3 test suites cover `resmart/quality.py`/`resmart/stats.py`/
+  `resmart/events.py` with synthetic fixtures, plus `tests/test_cli.py`
+  covers the `python -m resmart` dispatcher (exit codes, pipeline smoke); the
+  parser/preprocess/analysis/plotting code itself is
   checked only by hashing sample outputs against the previous version (the
   regression contract).
 - The `resA/B/C` 25 Hz channels carry no unit/scaling confirmation and are
@@ -559,44 +571,52 @@ SessionData + QualityReport
 
 ## 7. Feature roadmap
 
-- [done] `preprocess.py`: `clean_and_preprocess` — pandas pipeline that parses
+- [done] `resmart/preprocess.py`: `clean_and_preprocess` — pandas pipeline that parses
   ISO timestamps, sorts chronologically (wrap repair), maps 65535 to NaN,
   strips column names and resets the index. Consumers rely on the "Data
   contract for downstream tools" section in `README.md`.
-- [done] `analysis.py`: `segment_sessions` — assigns each row a 1-based
+- [done] `resmart/analysis.py`: `segment_sessions` — assigns each row a 1-based
   `session_id` for its night of use from the gap between consecutive rows
   (see "Secondary processing" in the architecture section). The standalone
   `main` now also persists the segmented frame via `-o` so a later step can
   plot it from the saved artifact.
-- [done] `plotting.py` + `analyze_cpap.py` — `plot_pressure_curve` derives
+- [done] `resmart/plotting.py` + `resmart/analyze_cpap.py` — `plot_pressure_curve` derives
   `IPAP_cmH2O`/`EPAP_cmH2O` (raw / 2) and plots a session's pressure curves;
   `plot_overlapped_sessions` overlays the last N nights on a relative
   hours-since-start axis; `plot_waveform` plots a high-rate channel
-  (resA/B/C at 25 Hz, pulse at 10 Hz) from a `-2`/`-1` export. `plotting.py`
-  is now also a standalone CLI consuming the step-5 CSV (`--session` /
-  `--overlay` / `--wave` / `-o` / `--show`); `analyze_cpap.py` remains the
+  (resA/B/C at 25 Hz, pulse at 10 Hz) from a `-2`/`-1` export. `resmart/plotting.py`
+  is now also the `plot` CLI consuming the step-5 CSV (`--session` /
+  `--overlay` / `--wave` / `-o` / `--show`); `resmart/analyze_cpap.py` remains the
   all-in-one wrapper that chains clean → segment → plot in one command.
   In both CLIs `--tidal` selects `plot_tidal_volume_distribution` (a
   histogram + KDE of tidal volume over the whole frame; seaborn).
-- [done] `quality.py` — Layer 1: `reconcile_units`/`load_session`/
+- [done] `resmart/quality.py` — Layer 1: `reconcile_units`/`load_session`/
   `resample_signal`/`detect_signal_quality`/`segment_night`, the JSON
   `QualityReport` (written by default into `reports/`),
-  the shaded plot, the `preprocess` CLI and the pytest suite
+  the shaded plot, the `preprocess` CLI (`resmart/quality_cli.py`) and the
+  pytest suite
   (`tests/test_quality.py`).
-- [done] `stats.py` — Layer 2: `session_summary`/`volume_distribution`/
+- [done] `resmart/stats.py` — Layer 2: `session_summary`/`volume_distribution`/
   `respiratory_rate`/`nightly_trend_summary` consuming the persisted
-  `QualityReport`, the `stats`/`trend` CLI, the annotated volume plot and the
+  `QualityReport`, the `stats`/`trend` CLI (`resmart/stats_cli.py`), the
+  annotated volume plot and the
   pytest suite (`tests/test_stats.py`). Next step: time-series/anomaly
   detection across nights on `reports/nightly_trend.csv`, then AHI-style
   event analysis (scope permitting).
-- [done] `events.py` — Layer 3: `detect_mask_removal`/`detect_flow_limitation`/
+- [done] `resmart/events.py` — Layer 3: `detect_mask_removal`/`detect_flow_limitation`/
   `estimate_ahi`/`event_timeline`/`events_report` consuming the persisted
-  `QualityReport`, the `events`/`events-report` CLI, the annotated night plot
+  `QualityReport`, the `events`/`events-report` CLI (`resmart/events_cli.py`),
+  the annotated night plot
   and the pytest suite (`tests/test_events.py`). Next step remains
   time-series/anomaly detection across nights (now on `reports/nightly_trend.csv`
   plus `reports/events_summary.csv`).
-- `graph_data.py`: turn the placeholder into a real viewer that reads the
-  cleaned CSV (daily hour strip chart, IPAP/EPAP/flow traces, spO2 overlay).
+- [done] `resmart/` package + consolidated CLI — the flat root scripts moved
+  into `resmart/`, with `resmart/cli.py`/`resmart/__main__.py` dispatching
+  `python -m resmart <step>` to `parse`/`preprocess`/`segment`/`plot`/
+  `analyze`/`quality`/`stats`/`events`; `resmart/workflow.py` backs the
+  one-shot `pipeline` step (quality + stats + events for every session,
+  writing the per-session QC JSON and event timeline plus `nightly_trend.csv`
+  and `events_summary.csv` under `--report-dir`).
 - Optional unit conversion flag (e.g. report IPAP/EPAP in cmH2O instead of raw
   0.5-cmH2O words).
 - Optional global time sorting of the output to flatten the wrap-file ordering.

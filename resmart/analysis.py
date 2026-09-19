@@ -13,7 +13,7 @@ import argparse
 
 import pandas as pd
 
-from preprocess import clean_and_preprocess
+from resmart.preprocess import clean_and_preprocess
 
 
 def segment_sessions(df, limit_hours=4):
@@ -66,7 +66,7 @@ def build_parser():
     parser.add_argument("-o", "--output", default=None,
                         help="also write the segmented DataFrame to a CSV "
                              "(with the session_id column) so a later step "
-                             "can plot it, e.g. plotting.py")
+                             "can plot it, e.g. python -m resmart plot")
     return parser
 
 
