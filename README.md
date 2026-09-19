@@ -27,6 +27,12 @@ currently supported by the software here.
 
 End-to-end usage of the scripts in this repository.
 
+Python dependencies for the analysis/plotting steps are listed in
+`requirements.txt` (`pip install -r requirements.txt`): `pandas` for
+preprocessing/analysis, `matplotlib` for plotting, and `seaborn` for the
+tidal-volume distribution plot. `resmart_parse.py` itself is standard
+library only.
+
 ### 1. Get the data off the device
 
 Copy the SD-card contents into a folder on your computer. The raw
@@ -130,6 +136,7 @@ at the end of step 5 with `analysis.py -o`:
     python plotting.py -i sessions.csv --overlay 10 --overlay-epap   # ... + EPAP
     python plotting.py -i sessions.csv --show             # most recent night, on screen
     python plotting.py -i sessions.csv -o night.png
+    python plotting.py -i sessions.csv --tidal            # tidal-volume histogram + KDE
 
 To plot the measured 25 Hz waveform (the configured IPAP/EPAP are flat
 presets, see Data format), the *export* must have used `-2`, and the same
@@ -145,12 +152,19 @@ steps 4-5 then produce a segmented CSV with the wave columns. Because
   cleaning or segmentation — a file without `session_id` gives a
   descriptive error. Without `--session` the most recent night is used;
   an unknown id prints the available ids.
-- `--session N` and `--overlay N` are mutually exclusive. `--overlay N`
+- `--session N`, `--overlay N` and `--tidal` are mutually exclusive.
+  `--overlay N`
   overlays the last `N` nights on a common time axis of *hours since each
   session started* (sessions begin at different wall-clock times, so a
   relative axis is what makes them line up for comparison);
   `--overlay-epap` adds the EPAP curves in dashed faint lines. If fewer
   sessions exist than requested, all of them are drawn.
+- `--tidal` plots a histogram with a kernel-density overlay of the tidal
+  volume (respiratory analysis), saved as
+  `tidal_volume_distribution.png` next to the input (or `-o`). It uses the
+  whole frame (all nights together); the values come from the parser's
+  `tidal_vol (L/min)` column, already in L/min, with invalid reads
+  (65535 -> NaN) dropped before binning.
 - `--wave <channel>` requires a CSV exported with `-2` (resA/resB/resC)
   or `-1` (pulse); `--session N` still selects the night (default: most
   recent), the output is `wave_<channel>_session_<id>_<date>.png`.
@@ -161,7 +175,9 @@ steps 4-5 then produce a segmented CSV with the wave columns. Because
   instead (no Agg backend).
 - Programmatic use: `plot_pressure_curve(session_df)` and
   `plot_overlapped_sessions(df, num_sessions=10)` from `plotting.py`
-  return the Matplotlib figure/axes for a single-session DataFrame.
+  return the Matplotlib figure/axes for a single-session DataFrame;
+  `plot_tidal_volume_distribution(df)` does the same for the whole cleaned
+  frame.
 
 ### 7. All-in-one option (analyze_cpap.py)
 
@@ -174,10 +190,14 @@ takes the raw step-3 export and does clean → segment → plot internally
     python analyze_cpap.py -i out.csv --overlay 10 --overlay-epap   # ... + EPAP
     python analyze_cpap.py -i out.csv --show             # most recent night, on screen
     python analyze_cpap.py -i out.csv -o night.png --limit-hours 6
+    python analyze_cpap.py -i out.csv --tidal            # tidal-volume histogram + KDE
 
 It shares the target/`--overlay`/`--overlay-epap`/`--wave`/`-o`/`--show`
 flags with the plotting CLI of step 6 and adds `--limit-hours` as a
 passthrough to the segmentation; its input is the raw parser CSV (step 3).
+`--tidal` (mutually exclusive with `--session`/`--overlay`/`--wave`) skips
+the segmentation and plots the tidal-volume distribution of the whole
+cleaned frame.
 Use the step-by-step commands when you want to keep and reuse the
 intermediate segmented CSV, or this single command when you only want one
 plot of the full pipeline.

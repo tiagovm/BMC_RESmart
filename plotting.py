@@ -11,6 +11,7 @@ CLI use (input must be the segmented CSV from step 5, i.e. the output of
     python plotting.py -i sessions.csv --session 3
     python plotting.py -i sessions.csv --overlay 10
     python plotting.py -i sessions.csv --wave resA --session 3
+    python plotting.py -i sessions.csv --tidal
 
 The pyplot backend is left to the caller: the CLI forces Agg for file
 output and leaves the default interactive backend for --show. Pyplot is
@@ -222,6 +223,53 @@ def plot_waveform(session_df, channel="resA"):
     return fig, ax
 
 
+TIDAL_RAW = "tidal_vol (L/min)"
+
+
+def plot_tidal_volume_distribution(df):
+    """Plot a histogram with a density (KDE) overlay of tidal volume.
+
+    ``df`` is the cleaned frame from ``clean_and_preprocess``; the values
+    come from the parser's tidal volume word and are already in L/min
+    (column ``tidal_vol (L/min)``), so no unit conversion is needed. Invalid
+    device reads (0xFFFF -> NaN by preprocessing) are dropped up front:
+    histogram bins and a kernel density estimate are distorted or fail when
+    given NaN values.
+
+    The whole frame is plotted (all sessions together); the distribution
+    covers every recorded night, not a single one.
+
+    Returns the ``(figure, axes)`` pair; the caller decides whether to save
+    it or display it on screen.
+    """
+    col = None
+    for c in df.columns:
+        if c.strip() == TIDAL_RAW:
+            col = c
+            break
+    if col is None:
+        raise ValueError(
+            "column '{}' not found: it is produced by resmart_parse.py + "
+            "clean_and_preprocess".format(TIDAL_RAW)
+        )
+
+    values = df[col].dropna().astype(float)
+    if values.empty:
+        raise ValueError("tidal volume column '{}' is empty or all NaN".format(TIDAL_RAW))
+
+    import seaborn as sns
+
+    fig, ax = _pyplot().subplots(figsize=(10, 5))
+    sns.histplot(values, kde=True, stat="density", ax=ax,
+                 color="tab:blue", edgecolor="white", linewidth=0.2)
+    ax.set_title("Tidal Volume Distribution")
+    ax.set_xlabel("Volume (L/min)")
+    ax.set_ylabel("Density")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig, ax
+
+
 def read_segmented_csv(path):
     """Read the step-5 output (a segmented CSV) for the plotting CLI.
 
@@ -272,6 +320,10 @@ def build_parser():
     target.add_argument("--overlay", type=int, default=None,
                         help="overlay the last N sessions on a relative "
                              "hours-since-start time axis")
+    target.add_argument("--tidal", action="store_true",
+                        help="plot a histogram + density curve of tidal "
+                             "volume across the whole frame instead of a "
+                             "per-session plot")
     parser.add_argument("--overlay-epap", action="store_true",
                         help="with --overlay, draw the EPAP curves as well")
     parser.add_argument("--wave", default=None,
@@ -292,7 +344,11 @@ def build_parser():
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.tidal and args.wave:
+        parser.error("--tidal and --wave select different plot modes; use one")
 
     if not args.show:
         matplotlib.use("Agg")
@@ -303,6 +359,20 @@ def main(argv=None):
     if not session_ids:
         print("no data found in {}".format(args.input))
         return 1
+
+    if args.tidal:
+        fig, _ = plot_tidal_volume_distribution(df)
+        default_name = "tidal_volume_distribution.png"
+        if args.show:
+            _pyplot().show()
+            return 0
+        if args.output is None:
+            out = os.path.join(os.path.dirname(os.path.abspath(args.input)), default_name)
+        else:
+            out = args.output
+        fig.savefig(out, dpi=110)
+        print("wrote {}".format(out))
+        return 0
 
     if args.overlay:
         fig, _ = plot_overlapped_sessions(

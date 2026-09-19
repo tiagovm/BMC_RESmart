@@ -4,7 +4,7 @@ Python 3 tools that decode raw SD-card data dumps from a BMC RESmart GII CPAP ma
 
 ## Run / verify
 
-No build system, deps, tests, or linting. `resmart_parse.py` uses only the standard library (struct/glob/argparse/datetime); `preprocess.py` and `analysis.py` are the approved exceptions that require pandas, and `plotting.py`/`analyze_cpap.py` require matplotlib. Verify changes by running against the sample dump:
+No build system, deps, tests, or linting. `resmart_parse.py` uses only the standard library (struct/glob/argparse/datetime); the analysis/plotting scripts use the packages listed in `requirements.txt` (install with `pip install -r requirements.txt`): `pandas` for `preprocess.py`/`analysis.py`, `matplotlib` for `plotting.py`/`analyze_cpap.py`, and `seaborn` for the tidal-volume distribution plot (`plot_tidal_volume_distribution`). Verify changes by running against the sample dump:
 
 ```
 python resmart_parse.py -i -q        # run while cwd = dir containing the data files

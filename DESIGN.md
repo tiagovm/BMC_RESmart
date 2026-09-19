@@ -214,6 +214,13 @@ read_csv → clean_and_preprocess → segment_sessions
   dense series (25/10 rows per second in order). Values are drawn as raw
   words (scaling unknown); long sessions are decimated to ≤200k points.
   The CLI selects it with `--wave <channel>`.
+- `plot_tidal_volume_distribution(df)` plots a histogram with a KDE overlay
+  of the parser's `tidal_vol (L/min)` word (already in L/min, no unit
+  conversion). NaN values injected by preprocessing for invalid reads
+  (65535) are dropped before binning — histogram/KDE break or distort on
+  NaN — using seaborn's `histplot(kde=True, stat="density")`. It uses the
+  whole cleaned frame (all sessions together), and the CLI selects it with
+  `--tidal`, which is mutually exclusive with the other plot modes.
 
 ## 4. Key design decisions
 
@@ -244,7 +251,9 @@ read_csv → clean_and_preprocess → segment_sessions
 ## 5. Constraints
 
 - `resmart_parse.py` uses the standard library only (`struct`, `argparse`, `glob`,
-  `datetime`); `preprocess.py` is the approved exception and requires pandas.
+  `datetime`); the analysis/plotting scripts use the packages declared in
+  `requirements.txt`: `pandas` (preprocess/analysis), `matplotlib` (plotting),
+  `seaborn` (tidal-volume KDE; its histogram/KDE relies on scipy underneath).
   No build step, test framework, or CI.
 - Input files are discovered from the **current working directory**; there is no
   directory argument (`scripts` invoked by path, `cwd` = data directory).
@@ -305,6 +314,8 @@ read_csv → clean_and_preprocess → segment_sessions
   is now also a standalone CLI consuming the step-5 CSV (`--session` /
   `--overlay` / `--wave` / `-o` / `--show`); `analyze_cpap.py` remains the
   all-in-one wrapper that chains clean → segment → plot in one command.
+  In both CLIs `--tidal` selects `plot_tidal_volume_distribution` (a
+  histogram + KDE of tidal volume over the whole frame; seaborn).
   Next step: per session-aggregated statistics (duration, AHI-style indices,
   pressure/wave profiles) in `analysis.py`, then richer plots.
 - `graph_data.py`: turn the placeholder into a real viewer that reads the

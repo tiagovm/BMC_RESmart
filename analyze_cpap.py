@@ -12,6 +12,7 @@ Examples:
     python analyze_cpap.py -i out.csv --overlay 10 --overlay-epap
     python analyze_cpap.py -i out.csv --show
     python analyze_cpap.py -i out.csv -o night.png --limit-hours 6
+    python analyze_cpap.py -i out.csv --tidal
 """
 
 import argparse
@@ -28,7 +29,8 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description=(
             "Analyze RESmart CPAP data and plot IPAP/EPAP pressure curves, "
-            "either for a single night or overlapped for the last N nights."
+            "either for a single night or overlapped for the last N nights, "
+            "a high-rate waveform channel, or the tidal volume distribution."
         )
     )
     parser.add_argument("-i", "--input", required=True,
@@ -39,6 +41,10 @@ def build_parser():
     target.add_argument("--overlay", type=int, default=None,
                         help="overlay the last N sessions on a relative "
                              "hours-since-start time axis")
+    target.add_argument("--tidal", action="store_true",
+                        help="plot a histogram + density curve of tidal "
+                             "volume across the whole cleaned frame instead "
+                             "of a per-session plot")
     parser.add_argument("--overlay-epap", action="store_true",
                         help="with --overlay, draw the EPAP curves as well")
     parser.add_argument("--wave", default=None,
@@ -62,16 +68,36 @@ def build_parser():
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.tidal and args.wave:
+        parser.error("--tidal and --wave select different plot modes; use one")
 
     if not args.show:
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from plotting import plot_overlapped_sessions, plot_pressure_curve, plot_waveform
+    from plotting import (
+        plot_overlapped_sessions, plot_pressure_curve,
+        plot_tidal_volume_distribution, plot_waveform)
 
-    df = segment_sessions(
-        clean_and_preprocess(args.input), limit_hours=args.limit_hours
-    )
+    df = clean_and_preprocess(args.input)
+
+    if args.tidal:
+        fig, _ = plot_tidal_volume_distribution(df)
+        if args.show:
+            plt.show()
+            return 0
+        if args.output is None:
+            out = os.path.join(os.path.dirname(os.path.abspath(args.input)),
+                               "tidal_volume_distribution.png")
+        else:
+            out = args.output
+        fig.savefig(out, dpi=110)
+        print("wrote {}".format(out))
+        return 0
+
+    df = segment_sessions(df, limit_hours=args.limit_hours)
 
     session_ids = sorted(df["session_id"].unique())
     if not session_ids:
