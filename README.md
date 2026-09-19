@@ -31,7 +31,8 @@ Python dependencies for the analysis/plotting steps are listed in
 `requirements.txt` (`pip install -r requirements.txt`): `pandas` for
 preprocessing/analysis, `matplotlib` for plotting, and `seaborn` for the
 tidal-volume distribution plot. `resmart_parse.py` itself is standard
-library only.
+library only. `pytest` (dev-only) runs the Layer-1 test suite in `tests/`:
+`python -m pytest -q`.
 
 ### 1. Get the data off the device
 
@@ -179,7 +180,53 @@ steps 4-5 then produce a segmented CSV with the wave columns. Because
   `plot_tidal_volume_distribution(df)` does the same for the whole cleaned
   frame.
 
-### 7. All-in-one option (analyze_cpap.py)
+### 7. Verify signal quality (quality.py, Layer 1)
+
+`quality.py` is the first analysis layer: it ingests a session's signal,
+preprocesses it (reconcile units → load → resample), runs detection on
+flatline/clipping/spike/drift artifacts, splits the night into hourly
+activity blocks, and emits a machine-readable JSON report plus (optionally)
+a shaded PNG plot. Not for medical use.
+
+It consumes either the raw parser CSV (step 3) or the segmented CSV
+(step 5); the input is recognized by the presence of a `session_id`
+column. The `-2` export is preferred so the 25 Hz `resA` waveform is
+analyzed (default channel `--channel resA`):
+
+    python quality.py preprocess out2.csv 2 --report qc.json --plot -o qc.png
+    python quality.py preprocess sessions.csv 1 --report qc_1.json
+    python quality.py preprocess sessions.csv 2 --plot --show
+
+Prints a text summary (valid fraction, suspect intervals, night blocks)
+and, with `--report`, writes a JSON `QualityReport` sized for downstream
+layers: `session_id`, `channel`, `sample_rate_hz`, `total_samples`,
+`valid_samples`, `valid_pct`, `counts_by_kind`
+(`flatline`/`clipping`/`spike`/`drift`), `params` (thresholds actually
+used) and a list of `intervals` (`start`/`end`/`kind`). `--plot` renders
+the signal with invalid stretches shaded, next to the input as
+`qc_session_<id>_<date>.png` unless `-o`/`--show` is given. Tunables:
+`--spike-rel-factor`, `--clip-lo`, `--clip-hi`, `--limit-hours`
+(segmentation passthrough) and `--target-hz` (default: measured rate).
+
+Detector semantics (chosen for oscillatory breath/flow signals where fast
+transitions are legit signal — see `DESIGN.md`):
+
+- **flatline** – rolling std over ~1 s below 1e-3 of the signal scale
+  (dead/zeroed sensor data);
+- **clipping** – samples pinned at explicit sensor saturation bounds.
+  Pass the real A/D raw-word bounds via `--clip-lo`/`--clip-hi`; without
+  them no clipping is flagged (the endpoints of a breathing trace are its
+  legit peaks/troughs, not clipping);
+- **spike** – impulse noise: a sample that jumps out of the trace *and
+  back* (its step to both neighbours exceeds `--spike-rel-factor` × the
+  rolling median of the trace's own positive sample-to-sample steps, with
+  opposite signs). A run of consecutive large steps is a legitimate breath
+  edge and is never flagged;
+- **drift** – slow baseline walk of the signal *envelope* (1 Hz median
+  bins): its 300 s rolling mean leaving the session median by > 0.5 of the
+  envelope scale. Requires ≥ 300 s of data, else skipped.
+
+### 8. All-in-one option (analyze_cpap.py)
 
 For convenience, steps 4-6 can be chained into a single command that
 takes the raw step-3 export and does clean → segment → plot internally

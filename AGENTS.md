@@ -4,7 +4,15 @@ Python 3 tools that decode raw SD-card data dumps from a BMC RESmart GII CPAP ma
 
 ## Run / verify
 
-No build system, deps, tests, or linting. `resmart_parse.py` uses only the standard library (struct/glob/argparse/datetime); the analysis/plotting scripts use the packages listed in `requirements.txt` (install with `pip install -r requirements.txt`): `pandas` for `preprocess.py`/`analysis.py`, `matplotlib` for `plotting.py`/`analyze_cpap.py`, and `seaborn` for the tidal-volume distribution plot (`plot_tidal_volume_distribution`). Verify changes by running against the sample dump:
+No build system or linting. `resmart_parse.py` uses only the standard library (struct/glob/argparse/datetime); the analysis/plotting scripts use the packages listed in `requirements.txt` (install with `pip install -r requirements.txt`): `pandas` for `preprocess.py`/`analysis.py`, `matplotlib` for `plotting.py`/`analyze_cpap.py`, `seaborn` for the tidal-volume distribution plot (`plot_tidal_volume_distribution`), plus dev-only `pytest` for the Layer-1 test suite in `tests/`.
+
+Run the tests with:
+
+```
+python -m pytest -q
+```
+
+(22 tests in `tests/test_quality.py`; synthetic fixtures only — nothing real touched.) Verify parser changes by running against the sample dump:
 
 ```
 python resmart_parse.py -i -q        # run while cwd = dir containing the data files
@@ -15,6 +23,7 @@ python resmart_parse.py -i -q        # run while cwd = dir containing the data f
 - Running with no arguments prints the CLI help to stderr and exits (code 2) — it reads or writes nothing. `RESmart_data.csv` (the default `-o` output file) is written only when output flags are passed; `--info` is read-only and never writes the CSV.
 - The CSV always has a header row naming every column; the first column is an ISO 8601 `timestamp` (`2026-07-21T23:59:45`). Known fields carry their unit in the header (e.g. `IPAP (0.5 cmH2O)`), driven by `packet.known_units`.
 - Regression contract: output must stay byte-identical for the same input/flags. After changing row/header generation, regenerate and hash the 8 mode variants (default, `-y`, `-s`, `-a`, `-2`, `-1`, `-a -y`, `-d` range) against the previous run.
+- Layer-1 verification: `python quality.py preprocess <seg_csv> <session_id> [--report qc.json] --plot` (it loads/reconciles/resamples/detects/segments and writes a JSON `QualityReport`). The detectors are synthetic-fixture-tested; on the real night they are expected to report ~100 % valid (see `DESIGN.md` "Key design decisions").
 - Requires Python 3 (hard-exits otherwise at module top, before arg parsing).
 
 ## Language / git

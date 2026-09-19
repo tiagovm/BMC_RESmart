@@ -6,10 +6,12 @@ Design documentation for the BMC RESmart GII parser.
 - Targets: `resmart_parse.py` (parsing + CLI), `preprocess.py` (CSV cleanup, pandas),
   `analysis.py` (pandas helpers such as session segmentation),
   `plotting.py` + `analyze_cpap.py` (matplotlib plots and the chained CLI),
+  `quality.py` (Layer 1: ingest, preprocess, signal-quality control, CLI + pytest suite),
   and `graph_data.py` (incomplete GUI).
 - Requirements on the toolchain: Python 3, standard library for
-  `resmart_parse.py`; pandas is the approved exception for
-  `preprocess.py`/`analysis.py`, matplotlib for `plotting.py`/`analyze_cpap.py`.
+  `resmart_parse.py`; pandas/numpy for `preprocess.py`/`analysis.py`/
+  `quality.py`, matplotlib for `plotting.py`/`analyze_cpap.py`,
+  pytest (dev-only) for the `tests/` suite.
 
 ## 1. Requirements
 
@@ -222,6 +224,84 @@ read_csv → clean_and_preprocess → segment_sessions
   whole cleaned frame (all sessions together), and the CLI selects it with
   `--tidal`, which is mutually exclusive with the other plot modes.
 
+### Layer 1: ingest, preprocess and quality control (`quality.py`)
+
+Layer 1 sits between segmentation and the event/statistics layers: for a
+chosen session and channel it reconciles known units, resamples the signal
+onto a regular grid, runs four artifact detectors, splits the night into
+hourly activity blocks, and publishes results as a JSON `QualityReport`
+plus (optionally) a shaded PNG. It reuses the existing loaders
+(`clean_and_preprocess`, `segment_sessions`, `read_segmented_csv`) instead
+of re-implementing them:
+
+```
+raw CSV (with/without session_id)  →  reconcile_units → load_session
+        → resample_signal (median, measured rate / --target-hz)
+        → detect_signal_quality → segment_night
+        → printed summary + write_quality_report (JSON) + plot_signal_quality (PNG)
+```
+
+- `load_session(csv, session_id, channel=...)` auto-detects the input form:
+  a segmented CSV (`session_id` column) is read as-is; a raw parser CSV is
+  cleaned (`clean_and_preprocess`) and segmented (`segment_sessions`) first.
+  Returns a `SessionData` (timestamp series, values, measured period from
+  the median positive sample spacing, computed sample rate).
+- `reconcile_units(df, findings)` checks known-unit headers once, never
+  converts values; it flags mismatches (e.g. `tidal_vol (L/min)` — a volume
+  mislabeled with a flow unit) and unknown columns, kept for provenance.
+- `resample_signal(df, target_hz=None, method="median", column=...)` maps a
+  possibly-irregular series onto even `target_hz` bins (default measured
+  rate). Bins are computed in integer nanoseconds to avoid float drift; the
+  original timestamps are preserved in `orig_timestamp`, bins without data
+  stay NaN, and gaps > 5 s are reported. Downsampling uses the median of the
+  covered source samples; upsample keeps NaN under coverage holes. The same
+  function serves a second client: the drift detector's 1 Hz envelope.
+- `detect_signal_quality(...)` returns a `QualityReport`
+  (`session_id`, `channel`, `sample_rate_hz`, `total_samples`,
+  `valid_samples`, `valid_pct`, `counts_by_kind`,
+  `intervals` = contiguous `SuspiciousInterval`s, `params`, `warnings`).
+
+**Detector semantics** were chosen *for oscillatory breath/flow signals like
+resA at 25 Hz*, where fast transitions are legitimate signal — over-firing
+on real data exposed wrong initial designs (see "Key design decisions"):
+
+- *flatline*: rolling std over ~1 s below `1e-3 × scale` — dead/zeroed
+  sensor stretches (device idle).
+- *clipping*: samples pinned at **explicit** sensor saturation bounds
+  (`clip_lo`/`clip_hi`). Default `None` disables the check, because the
+  0.5 %/99.5 % quantiles of a breathing trace are its *legitimate* peaks and
+  troughs — quantile-derived bounds flagged real breath extremes.
+- *spike*: impulse noise = a sample that jumps out of the trace and back.
+  Both of its bounding steps must exceed `spike_rel_factor` (25) × the
+  **rolling median of the trace's own positive sample-to-sample steps**,
+  with opposite signs. The local positive-step reference means a sharp legit
+  peek costs the same as the edges around it and breath "holds" (0 steps)
+  do not collapse the threshold; a run of consecutive large same-direction
+  steps is a legitimate breath edge, never a spike.
+- *drift*: slow baseline walk of the signal **envelope** (per-second median
+  bins): the envelope's 300 s rolling mean leaving the session median by
+  more than `drift_rel_tol` (0.5) × the envelope scale. Operates on the
+  envelope so periodic breathing cannot read as drift; skipped when the
+  envelope is shorter than the window.
+
+- `segment_night` splits the part of the session inside `22:00–07:00` into
+  hourly blocks and marks a block *active* when its rolling peak-to-trough
+  amplitude (5 s window) stays within a physiological band (the 10th
+  percentile of the session's positive amplitudes is the default floor).
+- `plot_signal_quality(session, report)` shades invalid stretches on the
+  signal trace (lazy matplotlib backend, mirroring `plotting.py`).
+- `write_quality_report(report, path)` persists the JSON artifact.
+- CLI: `python quality.py preprocess --input <csv> <session_id>
+  [--report qc.json] [--plot] [-o out.png] [--show] [--channel resA]
+  [--target-hz N] [--spike-rel-factor F] [--clip-lo L] [--clip-hi H]
+  [--limit-hours H]`. The `--report`/`--plot` steps read and merge the
+  already-computed report; `--show` needs an interactive backend.
+- Test suite: `tests/test_quality.py` (22 tests, run with `pytest` from the
+  repository root). Synthetic fixtures inject a known flatline, clipped
+  stretch, impulse spikes, a baseline step and a fast legit ramp, and cover
+  the input auto-detection, unit reconciliation, resample edge cases, JSON
+  round-trip and night-segmentation boundaries.
+
 ## 4. Key design decisions
 
 - **Streaming over accumulate-then-write.** The original implementation parsed
@@ -242,6 +322,19 @@ read_csv → clean_and_preprocess → segment_sessions
 - **Raw words are not converted.** Units are documented in the header (e.g.
   `0.5 cmH2O`) instead of rescaling values, keeping output faithful to the
   device data.
+- **Detectors calibrated on the real signal's statistics, not on synthetic
+  plausibility.** The initial spike detector (pointwise z against a rolling
+  amplitude MAD), quantile-derived clipping bounds and a 60 s amplitude-mean
+  drift test all over-fired on the real 25 Hz resA night (46 % valid, 30k
+  drift minutes): the channel's sharp transitions are *legitimate* flow
+  ramps (edges reach ~20-40 words/sample over several samples) and its
+  extreme values are real breath peaks. The reworked detectors therefore
+  reason in the transition domain with local references:
+  spike = isolated out-and-back step above the trace's *own* positive-step
+  median; clipping = explicit sensor bounds only; drift = the 1 Hz median
+  *envelope*. The same night then reports **100 % valid, 0 artifacts** —
+  a defensible negative (the channel is genuinely clean), with the synthetic
+  fixtures still proving each detector fires on its own artifact class.
 - **Default ISO timestamp column** with millisecond precision for high-rate
   subsample rows; `-y`/`-s` kept for backward compatibility.
 - **Runtime safety:** Python 3 enforced at the top of `main()`; invalid/extra
@@ -253,8 +346,9 @@ read_csv → clean_and_preprocess → segment_sessions
 - `resmart_parse.py` uses the standard library only (`struct`, `argparse`, `glob`,
   `datetime`); the analysis/plotting scripts use the packages declared in
   `requirements.txt`: `pandas` (preprocess/analysis), `matplotlib` (plotting),
-  `seaborn` (tidal-volume KDE; its histogram/KDE relies on scipy underneath).
-  No build step, test framework, or CI.
+  `seaborn` (tidal-volume KDE; its histogram/KDE relies on scipy underneath),
+  `numpy` (quality.py), and `pytest` (dev-only, for the `tests/` suite).
+  No build step, test framework in CI, or linting.
 - Input files are discovered from the **current working directory**; there is no
   directory argument (`scripts` invoked by path, `cwd` = data directory).
 - Python 3 only.
@@ -292,8 +386,12 @@ read_csv → clean_and_preprocess → segment_sessions
   `preprocess.py` is latent (only exercised by synthetic data / SpO2-less dumps).
 - Event/apnea detection is not implemented (neither the device nor this code
   performs it; the BMC analysis software does).
-- No automated test suite; regressions are checked manually by hashing sample
-  outputs against the previous version.
+- The Layer-1 test suite covers `quality.py` with synthetic fixtures; the
+  parser/preprocess/analysis/plotting code itself is checked only by hashing
+  sample outputs against the previous version (the regression contract).
+- The `resA/B/C` 25 Hz channels carry no unit/scaling confirmation and are
+  analyzed in raw words; the QC thresholds are documented defaults calibrated
+  on one night's data and may need tuning for other devices.
 
 ## 7. Feature roadmap
 
@@ -316,8 +414,12 @@ read_csv → clean_and_preprocess → segment_sessions
   all-in-one wrapper that chains clean → segment → plot in one command.
   In both CLIs `--tidal` selects `plot_tidal_volume_distribution` (a
   histogram + KDE of tidal volume over the whole frame; seaborn).
-  Next step: per session-aggregated statistics (duration, AHI-style indices,
-  pressure/wave profiles) in `analysis.py`, then richer plots.
+- [done] `quality.py` — Layer 1: `reconcile_units`/`load_session`/
+  `resample_signal`/`detect_signal_quality`/`segment_night`, the JSON
+  `QualityReport`, the shaded plot, the `preprocess` CLI and the pytest
+  suite (`tests/test_quality.py`). Next step: per-session aggregated
+  statistics (duration, AHI-style indices, pressure/wave profiles) in
+  `analysis.py`, then richer plots.
 - `graph_data.py`: turn the placeholder into a real viewer that reads the
   cleaned CSV (daily hour strip chart, IPAP/EPAP/flow traces, spO2 overlay).
 - Optional unit conversion flag (e.g. report IPAP/EPAP in cmH2O instead of raw

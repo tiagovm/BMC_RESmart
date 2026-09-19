@@ -1,3 +1,6 @@
 pandas
 matplotlib
 seaborn
+
+# test/development only
+pytest
